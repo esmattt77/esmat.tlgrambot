@@ -17,6 +17,7 @@ import telebot
 import phonenumbers
 import countryflag
 from google_trans_new import google_trans_new
+from flask import Flask, request # <--- هذا السطر تمت إضافته
 
 # Local application module imports
 import utils
@@ -26,6 +27,24 @@ from vneng import VNEngine
 # Initialize the bot token
 bot: ClassVar[Any] = telebot.TeleBot(utils.get_token())
 print(f"\33[1;36m::\33[m Bot is running with ID: {bot.get_me().id}")
+
+# Initialize Flask app <--- هذه الأسطر تمت إضافتها
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot is running!"
+
+@app.route('/' + utils.get_token(), methods=['POST'])
+def webhook():
+    if request.headers.get('content-type') == 'application/json':
+        json_string = request.get_data().decode('utf-8')
+        update = telebot.types.Update.de_json(json_string)
+        bot.process_new_updates([update])
+        return '', 200
+    else:
+        telebot.stop_bot()
+        return '', 200
 
 
 def is_subscribed(user_id):
@@ -352,9 +371,10 @@ def number_inbox_handler(call: ClassVar[Any]) -> NoReturn:
     # Send messages to user
     for message in messages:
         for key, value in message.items():
-            translator = Translator()
+            # <--- هذا هو السطر الذي يجب تعديله
+            translator = google_trans_new()
             original_message = value.split('received from OnlineSIM.io')[0]
-            translated_message = translator.translate(original_message, dest='ar').text
+            translated_message = translator.translate(original_message, lang_tgt='ar')
             bot.send_message(
                 chat_id=call.message.chat.id,
                 reply_to_message_id=call.message.message_id,
@@ -541,9 +561,9 @@ def new_number_handler(call):
 
 # Run the bot on polling mode
 if __name__ == '__main__':
-    try:
-        bot.infinity_polling(
-            skip_pending=True
-        )
-    except KeyboardInterrupt:
-        raise SystemExit("\n\33[1;31m::\33[m تم الإيقاف بواسطة المستخدم")
+    # <--- هذه الأسطر تمت إضافتها
+    app.run(
+        host="0.0.0.0",
+        port=5000,
+        threaded=True
+    )
