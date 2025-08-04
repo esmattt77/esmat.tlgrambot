@@ -16,7 +16,7 @@ from typing import ClassVar, NoReturn, Any, Union, List, Dict
 import telebot
 import phonenumbers
 import countryflag
-from googletrans import Translator
+from google_trans_new import google_trans_new
 
 # Local application module imports
 import utils
