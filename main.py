@@ -19,9 +19,9 @@ import countryflag
 from googletrans import Translator
 
 # Local application module imports
-from src import utils
-from src.utils import User
-from src.vneng import VNEngine
+import utils
+from utils import User
+from vneng import VNEngine
 
 # Initialize the bot token
 bot: ClassVar[Any] = telebot.TeleBot(utils.get_token())
