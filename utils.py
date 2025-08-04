@@ -3,7 +3,7 @@
 
 # Standard library imports
 from typing import ClassVar, NoReturn, Any
-
+import os # <-- أضف هذا السطر
 
 class User:
     """
@@ -35,16 +35,15 @@ class User:
         """
         # Return name
         return str(self.fn or self.ln or self.un or self.id)
-        
 
 
 def get_token() -> str:
     """
-    Function to return Bot's token from token file
+    Function to return Bot's token from environment variables
 
     Returns:
         token (str): Bot's Token
     """
-    # Open and read token and return it
-    with open("src/token.txt") as file:
-        return file.read().strip()
+    # Get token from environment variable and return it
+    return os.getenv("BOT_TOKEN")
+
