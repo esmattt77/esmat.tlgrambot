@@ -341,7 +341,12 @@ def number_command_handler(message: ClassVar[Any]) -> NoReturn:
             message_id=prompt.message_id,
             text="عذرًا، حدث خطأ أثناء محاولة جلب رقم جديد. يرجى المحاولة مرة أخرى."
         )
-
+@bot.callback_query_handler(func=lambda call: True)
+def handle_all_callbacks(call):
+    print(f"Received a callback query: {call.data}")
+    # Answer the callback query to remove the loading animation on the button
+    bot.answer_callback_query(callback_query_id=call.id)
+    
 
 @bot.callback_query_handler(func=lambda x:x.data.startswith("msg"))
 def number_inbox_handler(call: ClassVar[Any]) -> NoReturn:
