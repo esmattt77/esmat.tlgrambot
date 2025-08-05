@@ -17,25 +17,26 @@ import telebot
 import phonenumbers
 import countryflag
 from google_trans_new import google_trans_new
-from flask import Flask, request # <--- هذا السطر تمت إضافته
+from flask import Flask, request
 
 # Local application module imports
 import utils
 from utils import User
 from vneng import VNEngine
 
-# Initialize the bot token
-bot: ClassVar[Any] = telebot.TeleBot(utils.get_token())
+# Get the bot token from environment variables and initialize the bot
+BOT_TOKEN = utils.get_token()
+bot: ClassVar[Any] = telebot.TeleBot(BOT_TOKEN)
 print(f"\33[1;36m::\33[m Bot is running with ID: {bot.get_me().id}")
 
-# Initialize Flask app <--- هذه الأسطر تمت إضافتها
+# Initialize Flask app
 app = Flask(__name__)
 
 @app.route('/')
 def home():
     return "Bot is running!"
 
-@app.route('/' + utils.get_token(), methods=['POST'])
+@app.route('/' + BOT_TOKEN, methods=['POST'])
 def webhook():
     if request.headers.get('content-type') == 'application/json':
         json_string = request.get_data().decode('utf-8')
@@ -371,7 +372,6 @@ def number_inbox_handler(call: ClassVar[Any]) -> NoReturn:
     # Send messages to user
     for message in messages:
         for key, value in message.items():
-            # <--- هذا هو السطر الذي يجب تعديله
             translator = google_trans_new()
             original_message = value.split('received from OnlineSIM.io')[0]
             translated_message = translator.translate(original_message, lang_tgt='ar')
