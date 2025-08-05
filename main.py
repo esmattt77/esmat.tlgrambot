@@ -40,12 +40,19 @@ def home():
 def webhook():
     if request.headers.get('content-type') == 'application/json':
         json_string = request.get_data().decode('utf-8')
+        print(f"Received JSON payload: {json_string}")
         update = telebot.types.Update.de_json(json_string)
-        bot.process_new_updates([update])
+        try:
+            bot.process_new_updates([update])
+        except Exception as e:
+            print(f"Error processing update: {e}")
+            # Optionally, log the raw data for debugging
+            print(f"Failed to process update with data: {json_string}")
         return '', 200
     else:
         telebot.stop_bot()
         return '', 200
+        
 
 
 def is_subscribed(user_id):
