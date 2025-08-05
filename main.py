@@ -16,7 +16,7 @@ from typing import ClassVar, NoReturn, Any, Union, List, Dict
 import telebot
 import phonenumbers
 import countryflag
-# from google_trans_new import google_trans_new  # هذا السطر تم تعطيله مؤقتاً
+# from google_trans_new import google_trans_new  # تم تعطيلها لضمان استقرار البوت
 from flask import Flask, request
 
 # Local application module imports
@@ -36,6 +36,7 @@ app = Flask(__name__)
 def home():
     return "Bot is running!"
 
+# تم التعديل هنا: إضافة معالجة للأخطاء لـ webhook
 @app.route('/' + BOT_TOKEN, methods=['POST'])
 def webhook():
     if request.headers.get('content-type') == 'application/json':
@@ -46,13 +47,11 @@ def webhook():
             bot.process_new_updates([update])
         except Exception as e:
             print(f"Error processing update: {e}")
-            # Optionally, log the raw data for debugging
             print(f"Failed to process update with data: {json_string}")
         return '', 200
     else:
         telebot.stop_bot()
         return '', 200
-        
 
 
 def is_subscribed(user_id):
@@ -348,32 +347,29 @@ def number_command_handler(message: ClassVar[Any]) -> NoReturn:
             message_id=prompt.message_id,
             text="عذرًا، حدث خطأ أثناء محاولة جلب رقم جديد. يرجى المحاولة مرة أخرى."
         )
-@bot.callback_query_handler(func=lambda call: True)
-def handle_all_callbacks(call):
-    print(f"Received a callback query: {call.data}")
-    # Answer the callback query to remove the loading animation on the button
-    bot.answer_callback_query(callback_query_id=call.id)
-    
 
+
+# تم التعديل هنا: لإضافة معالجة الأخطاء وللتأكد من عمل الدالة
 @bot.callback_query_handler(func=lambda x:x.data.startswith("msg"))
 def number_inbox_handler(call: ClassVar[Any]) -> NoReturn:
-    """
-    Callback query handler to handle inbox messages
-    Sends last 5 messages in number's inbox
-
-    Parameters:
-        call (typing.ClassVar[Any]): incoming call object
-
-    Returns:
-        None (typing.NoReturn)
-    """
+    print("Received callback from 'Incoming Messages' button. Starting to process...")
+    
     # Initialize the Virtual Number engine
     engine: ClassVar[Any] = VNEngine()
 
     # Get country name and number from call's data
     country: str
     number: str
-    _, country, number = call.data.split("&")
+    try:
+        _, country, number = call.data.split("&")
+    except ValueError:
+        print(f"Error: Could not split callback data: {call.data}")
+        bot.answer_callback_query(
+            callback_query_id=call.id,
+            text="عذراً، حدث خطأ في معالجة طلبك.",
+            show_alert=True
+        )
+        return
 
     # Get all messages and select last 5 messages
     messages: List[Dict[str, str]] = engine.get_number_inbox(
@@ -381,23 +377,29 @@ def number_inbox_handler(call: ClassVar[Any]) -> NoReturn:
         number=number
     )[:5]
 
+    # Check if there are any messages and send a message if not
+    if not messages:
+        bot.answer_callback_query(
+            callback_query_id=call.id,
+            text="لا توجد رسائل جديدة.",
+            show_alert=True
+        )
+        return
+
     # Send messages to user
     for message in messages:
         for key, value in message.items():
-            translator = google_trans_new()
             original_message = value.split('received from OnlineSIM.io')[0]
-            translated_message = translator.translate(original_message, lang_tgt='ar')
             bot.send_message(
                 chat_id=call.message.chat.id,
                 reply_to_message_id=call.message.message_id,
                 text=(
                     f"⚯͛ الوقت: {key}\n\n"
-                    f"الرسالة الأصلية: {original_message}\n\n"
-                    f"الرسالة المترجمة: {translated_message}"
+                    f"الرسالة: {original_message}"
                 )
             )
 
-    # Answer callback query
+    # Answer callback query after sending all messages
     bot.answer_callback_query(
         callback_query_id=call.id,
         text=(
