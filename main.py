@@ -16,7 +16,7 @@ from typing import ClassVar, NoReturn, Any, Union, List, Dict
 import telebot
 import phonenumbers
 import countryflag
-from google_trans_new import google_trans_new
+# from google_trans_new import google_trans_new  # هذا السطر تم تعطيله مؤقتاً
 from flask import Flask, request
 
 # Local application module imports
