@@ -5,11 +5,12 @@ import logging
 import asyncio
 import os
 import threading
+import sys  # لاستخدامه في الخروج الآمن إذا لم يتم العثور على التوكن
 from uuid import uuid4
 from flask import Flask, request, jsonify
 
 # استيراد من python-telegram-bot
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Bot
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 )
@@ -18,10 +19,17 @@ from telegram.ext import (
 from sms_man_api import SMSManAPI 
 
 # --- الثوابت والتكوينات (تُقرأ من متغيرات البيئة) ---
-TOKEN = os.getenv("BOT_TOKEN", "6096818900:AAH1CUDxw0O3yNgbfgdb6m_tTqLnWCD30mw")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "1689271304"))
-ADMIN_CHANNEL_ID = int(os.getenv("ADMIN_CHANNEL_ID", "-1001602685079"))
-LOG_ADMIN_ID = int(os.getenv("LOG_ADMIN_ID", "501030516")) 
+
+# التعديل الرئيسي: الاعتماد كلياً على متغير البيئة
+TOKEN = os.getenv("BOT_TOKEN")
+if not TOKEN:
+    logging.error("FATAL: BOT_TOKEN environment variable is not set. Exiting.")
+    sys.exit(1)
+    
+# باقي المتغيرات تستخدم قيم افتراضية آمنة في حال الفشل
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0")) # يجب أن تفشل الأوامر إذا لم يتم تعيينه
+ADMIN_CHANNEL_ID = int(os.getenv("ADMIN_CHANNEL_ID", "-1000000000000"))
+LOG_ADMIN_ID = int(os.getenv("LOG_ADMIN_ID", "0")) 
 
 WEBHOOK_URL_BASE = os.getenv("WEBHOOK_URL_BASE") 
 WEBHOOK_PATH = f'/{TOKEN}'
@@ -41,8 +49,8 @@ app = Flask(__name__)
 # --- دوال مساعدة لحفظ وتحميل البيانات ---
 INFO_FILE = "info.json"
 
+# ... (دوال load_info و save_info و get_main_keyboard لم تتغير) ...
 def load_info():
-    """قراءة البيانات من info.json."""
     try:
         with open(INFO_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
@@ -50,7 +58,6 @@ def load_info():
         return {}
 
 def save_info(info_data):
-    """حفظ البيانات إلى info.json."""
     try:
         with open(INFO_FILE, "w", encoding="utf-8") as f:
             json.dump(info_data, f, indent=4, ensure_ascii=False)
@@ -58,7 +65,6 @@ def save_info(info_data):
         logger.error(f"Error saving info.json: {e}")
 
 def get_main_keyboard():
-    """إنشاء لوحة المفاتيح الرئيسية للإدارة."""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("اضافة دولة ➕", callback_data="add"),
          InlineKeyboardButton("حذف دولة 🗑️", callback_data="del")],
@@ -67,7 +73,12 @@ def get_main_keyboard():
         [InlineKeyboardButton("الدول المضافة 📊", callback_data="all")],
     ])
 
+
 # --- 🎯 منطق الـ Checker (شراء الأرقام) كـ Thread منفصل ---
+
+# ... (دوال start_checker_thread و stop_checker_thread و check_and_buy_number_loop لم تتغير) ...
+
+checker_thread = None
 
 def start_checker_thread():
     """يبدأ تشغيل المهمة الخلفية للـ Checker."""
@@ -146,10 +157,10 @@ async def check_and_buy_number_loop():
             await asyncio.sleep(5)
 
         await asyncio.sleep(5) 
-        
-checker_thread = None
 
 # --- Handlers (معالجات أوامر البوت) ---
+
+# ... (بقية الـ Handlers لم تتغير) ...
 
 async def start_command(update: Update, context) -> None:
     if update.effective_user.id != ADMIN_ID: return
@@ -205,8 +216,14 @@ async def handle_text_input(update: Update, context) -> None:
 
 
 async def handle_callback(update: Update, context) -> None:
+    """معالجة ضغط الأزرار المضمنة."""
     query = update.callback_query
-    await query.answer()
+    
+    # التعديل: الرد الفوري على الاستعلام لتجنب خطأ 'Event loop is closed'
+    try:
+        await query.answer() 
+    except Exception as e:
+        logger.error(f"Failed to answer callback query (Continuing execution): {e}")
 
     data = query.data
     chat_id = query.message.chat_id
@@ -260,7 +277,8 @@ async def handle_callback(update: Update, context) -> None:
         if res.get("ok") and code and code != "0": 
             await query.edit_message_text(f"تم وصول الكود بنجاح:\n📞 الرقم: {number}\n🔒 الكود: {code}", message_id=message_id, chat_id=chat_id)
         else:
-            await query.answer(text="🚫 لم يصل الكود", show_alert=True)
+            # يجب الإجابة على الاستعلام حتى لو لم يصل الكود، لكن هذا تم بالفعل في البداية
+            await query.edit_message_text(f"🚫 لم يصل الكود بعد للرقم {number}", message_id=message_id, chat_id=chat_id)
             
     elif ex[0] == "ban":
         operation_id = ex[1]
@@ -284,7 +302,6 @@ application.add_handler(CallbackQueryHandler(handle_callback))
 
 @app.route('/set_webhook')
 async def set_webhook_route(): 
-    """مسار لتحديد Webhook عند النشر."""
     if not WEBHOOK_URL_BASE:
         return jsonify({"status": "error", "message": "WEBHOOK_URL_BASE environment variable is not set."}), 500
 
@@ -299,7 +316,6 @@ async def set_webhook_route():
 
 @app.route(WEBHOOK_PATH, methods=['POST'])
 async def telegram_webhook():
-    """مسار استقبال تحديثات تيليجرام."""
     if request.method == "POST":
         update = Update.de_json(request.get_json(force=True), application.bot)
         await application.process_update(update)
@@ -307,37 +323,27 @@ async def telegram_webhook():
 
 @app.route('/')
 def index():
-    """مسار اختبار الحالة."""
     return 'Bot is running via Webhook.'
 
 # --- نقطة التشغيل الرئيسية ---
 def main() -> None:
-    """بدء تشغيل التطبيق (يشمل تهيئة Application وبدء Flask)."""
     
-    # التعديل الحاسم: تهيئة Application بشكل لاتزامني (Async) قبل بدء التشغيل
     try:
         async def init_application():
             await application.initialize() 
-            # إضافة دالة لتهيئة التخزين إذا كنت تستخدم UserData/ChatData 
-            # if application.persistence: 
-            #     await application.persistence.initialize()
         
-        # استخدام asyncio.run لتشغيل التهيئة
         asyncio.run(init_application())
         logger.info("Telegram Application initialized successfully.")
         
     except Exception as e:
         logger.error(f"FATAL: Error during Telegram application initialization: {e}")
-        # إذا فشلت التهيئة، لا تبدأ تشغيل Flask
         return
 
-    # تشغيل مهمة الـ Checker إذا كانت الحالة "work" عند بدء التطبيق
     info = load_info()
     if info.get("status") == "work":
         start_checker_thread()
         logger.info("Checker thread auto-started.")
         
-    # تشغيل Flask
     app.run(host="0.0.0.0", port=PORT)
 
 
