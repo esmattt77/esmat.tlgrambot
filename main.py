@@ -4,7 +4,7 @@ import json
 import logging
 import asyncio
 import os
-import threading # لاستخدام المهام الخلفية
+import threading
 from uuid import uuid4
 from flask import Flask, request, jsonify
 
@@ -21,10 +21,10 @@ from sms_man_api import SMSManAPI
 TOKEN = os.getenv("BOT_TOKEN", "6096818900:AAH1CUDxw0O3yNgbfgdb6m_tTqLnWCD30mw")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "1689271304"))
 ADMIN_CHANNEL_ID = int(os.getenv("ADMIN_CHANNEL_ID", "-1001602685079"))
-LOG_ADMIN_ID = int(os.getenv("LOG_ADMIN_ID", "501030516")) # لم يتم استخدامه هنا بشكل كامل، لكن للأمانة.
+LOG_ADMIN_ID = int(os.getenv("LOG_ADMIN_ID", "501030516")) 
 
-WEBHOOK_URL_BASE = os.getenv("WEBHOOK_URL_BASE") # مثال: https://your-app-name.onrender.com
-WEBHOOK_PATH = f'/{TOKEN}' # المسار الذي سيستقبل التحديثات
+WEBHOOK_URL_BASE = os.getenv("WEBHOOK_URL_BASE") # مثال: https://esmat-tlgrambot.onrender.com
+WEBHOOK_PATH = f'/{TOKEN}'
 PORT = int(os.getenv('PORT', '8080'))
 
 # --- تهيئة Logging ---
@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 application = Application.builder().token(TOKEN).updater(None).build()
 app = Flask(__name__)
 
-# --- دوال مساعدة لحفظ وتحميل البيانات (بدون تغيير) ---
+# --- دوال مساعدة لحفظ وتحميل البيانات ---
 INFO_FILE = "info.json"
 
 def load_info():
@@ -57,6 +57,7 @@ def save_info(info_data):
         logger.error(f"Error saving info.json: {e}")
 
 def get_main_keyboard():
+    """إنشاء لوحة المفاتيح الرئيسية للإدارة."""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("اضافة دولة ➕", callback_data="add"),
          InlineKeyboardButton("حذف دولة 🗑️", callback_data="del")],
@@ -70,8 +71,10 @@ def get_main_keyboard():
 def start_checker_thread():
     """يبدأ تشغيل المهمة الخلفية للـ Checker."""
     global checker_thread
+    # نستخدم try-except لتجنب بدء مهمتين
     if checker_thread is None or not checker_thread.is_alive():
-        checker_thread = threading.Thread(target=asyncio.run, args=(check_and_buy_number_loop(),))
+        # استخدام asyncio.run لتشغيل الدالة اللاتزامنية في Thread منفصل
+        checker_thread = threading.Thread(target=asyncio.run, args=(check_and_buy_number_loop(),), daemon=True)
         checker_thread.start()
         logger.info("Checker thread started.")
     
@@ -95,16 +98,14 @@ async def check_and_buy_number_loop():
         return
 
     api = SMSManAPI(api_key)
-    bot = application.bot # استخدام كائن البوت من التطبيق
+    bot = application.bot 
 
-    # حلقة لا نهائية (تماما مثل عمل سكريبت PHP في Cron job)
     while True:
         info_loop = load_info()
         
         # شرط الإيقاف اللطيف
         if info_loop.get("status") != "work":
             logger.info("Checker loop exiting because status is not 'work'.")
-            # إعادة ضبط الحالة إلى None بعد الخروج لضمان عدم وجود حالة 'stopping'
             if info_loop.get("status") == "stopping":
                  info_loop["status"] = None
                  save_info(info_loop)
@@ -116,6 +117,7 @@ async def check_and_buy_number_loop():
                 # التحقق مجدداً من حالة الإيقاف قبل كل محاولة
                 if load_info().get("status") != "work": break 
                 
+                # استخدام asyncio.to_thread لتشغيل SMSManAPI المتزامن
                 res = await asyncio.to_thread(api.get_number, country_code, "wa")
                 
                 if res.get("ok"):
@@ -139,25 +141,25 @@ async def check_and_buy_number_loop():
                             chat_id=ADMIN_CHANNEL_ID,
                             text=txt, parse_mode="Markdown", reply_markup=reply_markup
                         )
-                        await asyncio.sleep(0.1) # التأخير البسيط
+                        await asyncio.sleep(0.1)
                 else:
                     logger.warning(f"Failed to get number for {country_code}. Error: {res.get('error')}")
                     await asyncio.sleep(0.5)
                     
         except Exception as e:
             logger.error(f"Error in checker loop: {e}")
-            await asyncio.sleep(5) # انتظار 5 ثوانٍ عند حدوث خطأ عام
+            await asyncio.sleep(5)
 
         # الانتظار بين دورات الدول
         await asyncio.sleep(5) 
         
-# تهيئة الـ Thread في البداية
 checker_thread = None
-# --- Handlers (نفس منطق index.php، مع تعديلات بسيطة) ---
+
+# --- Handlers (معالجات أوامر البوت) ---
 
 async def start_command(update: Update, context) -> None:
+    """معالجة أمر /start."""
     if update.effective_user.id != ADMIN_ID: return
-    # ... (بقية المنطق) ...
     info = load_info()
     info["admin"] = "" 
     save_info(info)
@@ -166,36 +168,36 @@ async def start_command(update: Update, context) -> None:
 
 
 async def work_command(update: Update, context) -> None:
+    """معالجة أمر /work لتشغيل الصيد."""
     if update.effective_user.id != ADMIN_ID: return
     info = load_info()
     info["status"] = "work"
     save_info(info)
     
-    # تشغيل المهمة الخلفية للـ Checker
     start_checker_thread()
-    
     await update.message.reply_text("تم تشغيل الصيد")
 
 
 async def stop_command(update: Update, context) -> None:
+    """معالجة أمر /stop لإيقاف الصيد."""
     if update.effective_user.id != ADMIN_ID: return
-    # إرسال إشارة الإيقاف للمهمة الخلفية
     stop_checker_thread()
     await update.message.reply_text("تم ايقاف الصيد (سيتم التوقف بعد انتهاء الدورة الحالية)")
 
 
 async def handle_text_input(update: Update, context) -> None:
+    """معالجة إدخال النص بناءً على حالة الأدمن."""
     if update.effective_user.id != ADMIN_ID: return
+
     info = load_info()
     current_state = info.get("admin")
     text = update.message.text
     
     if not current_state: return
 
-    # ... (منطق إضافة/حذف/رفع API Key كما كان في index.php) ...
-    
     if current_state == "add":
-        code = str(uuid4())[:8]
+        code = str(uuid4())[:8] 
+        info["countries"] = info.get("countries", {})
         info["countries"][code] = text
         await update.message.reply_text(f"تمت الاضافة بنجاح\nكود الدولة: `{code}`\n(يستخدم هذا الكود عند الرغبة بحذف الدولة)", parse_mode="Markdown")
     elif current_state == "del":
@@ -213,6 +215,7 @@ async def handle_text_input(update: Update, context) -> None:
 
 
 async def handle_callback(update: Update, context) -> None:
+    """معالجة ضغط الأزرار المضمنة."""
     query = update.callback_query
     await query.answer()
 
@@ -224,8 +227,7 @@ async def handle_callback(update: Update, context) -> None:
     info = load_info()
     api_key = info.get("key")
     api = SMSManAPI(api_key)
-
-    # 1. أوامر الإدارة الأساسية (منطق index.php)
+    
     if query.from_user.id == ADMIN_ID:
         
         if data == "back":
@@ -233,24 +235,35 @@ async def handle_callback(update: Update, context) -> None:
             save_info(info)
             await query.edit_message_text("أوامر الإدارة:\n/work لتشغيل الصيد\n/stop لإيقاف الصيد", reply_markup=get_main_keyboard())
             return
-        # ... (بقية منطق الإدارة) ...
-        
+
         elif data == "all":
             countries_dict = info.get("countries", {})
-            # ... (عرض الدول) ...
+            display_text = "\n".join([f"[{code}] : {country}" for code, country in countries_dict.items()]) if countries_dict else "لا توجد دول مضافة"
+            await query.answer(text=display_text, show_alert=True)
             return
-        
+            
         elif data in ["add", "del", "up"]:
-            # ... (تغيير الحالة) ...
+            if data == "up" and api_key is not None:
+                await query.answer(text="لايمكنك اضافة api key جديد الا بعد حذف القديم", show_alert=True)
+                return
+            
+            text_msg = "قم بارسال رمز الدولة في موقع sms-man" if data == "add" else \
+                       "قم بارسال كود الدولة" if data == "del" else \
+                       "قم بارسال api key الخاص بحسابك"
+            
+            await query.edit_message_text(text_msg, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("رجوع🔙", callback_data="back")]]))
+            info["admin"] = data
+            save_info(info)
             return
 
         elif data == "rem":
-            # ... (حذف API Key) ...
+            if "key" in info: del info["key"]
+            save_info(info)
+            await query.edit_message_text("تم الحذف بنجاح", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("رجوع🔙", callback_data="back")]]))
             return
             
-    # 2. معالجة أوامر الـ Callback العامة (getCode و ban)
+    # معالجة أوامر الـ Callback العامة (getCode و ban)
     if ex[0] == "getCode":
-        # ... (منطق getCode) ...
         operation_id = ex[1]; number = ex[2]
         res = await asyncio.to_thread(api.get_code, operation_id)
         code = res.get("code")
@@ -261,7 +274,6 @@ async def handle_callback(update: Update, context) -> None:
             await query.answer(text="🚫 لم يصل الكود", show_alert=True)
             
     elif ex[0] == "ban":
-        # ... (منطق ban) ...
         operation_id = ex[1]
         res = await asyncio.to_thread(api.cancel, operation_id)
         
@@ -269,6 +281,7 @@ async def handle_callback(update: Update, context) -> None:
             await query.edit_message_text("تم حظر الرقم بنجاح", message_id=message_id, chat_id=chat_id)
         else:
             await query.edit_message_text(f"فشل حظر الرقم. الخطأ: {res.get('error')}", message_id=message_id, chat_id=chat_id)
+
 
 # --- تعريف الـ Handlers في تطبيق Telegram ---
 application.add_handler(CommandHandler("start", start_command, filters.User(ADMIN_ID)))
@@ -281,12 +294,14 @@ application.add_handler(CallbackQueryHandler(handle_callback))
 # --- 🌐 مسارات Flask (Webhooks) ---
 
 @app.route('/set_webhook')
-def set_webhook_route():
+async def set_webhook_route(): # <== التعديل: أصبح async
     """مسار لتحديد Webhook عند النشر."""
     if not WEBHOOK_URL_BASE:
         return jsonify({"status": "error", "message": "WEBHOOK_URL_BASE environment variable is not set."}), 500
 
-    s = application.set_webhook(url=WEBHOOK_URL_BASE + WEBHOOK_PATH)
+    # التعديل: استخدام await و application.bot
+    s = await application.bot.set_webhook(url=WEBHOOK_URL_BASE + WEBHOOK_PATH)
+    
     if s:
         logger.info(f"Webhook set successfully to {WEBHOOK_URL_BASE + WEBHOOK_PATH}")
         return jsonify({"status": "ok", "message": "Webhook set"}), 200
@@ -299,16 +314,17 @@ async def telegram_webhook():
     """مسار استقبال تحديثات تيليجرام."""
     if request.method == "POST":
         update = Update.de_json(request.get_json(force=True), application.bot)
-        # معالجة التحديث باستخدام التطبيق اللاتزامني
         await application.process_update(update)
     return 'ok'
 
 @app.route('/')
 def index():
+    """مسار اختبار الحالة."""
     return 'Bot is running via Webhook.'
 
 # --- نقطة التشغيل الرئيسية ---
 if __name__ == "__main__":
+    
     # تشغيل مهمة الـ Checker إذا كانت الحالة "work" عند بدء التطبيق
     info = load_info()
     if info.get("status") == "work":
@@ -316,5 +332,5 @@ if __name__ == "__main__":
         logger.info("Checker thread auto-started.")
         
     # تشغيل Flask
-    # يتم استدعاء مسار set_webhook_route يدويًا أو عبر إعدادات الاستضافة لتعيين الـ Webhook
+    # Render يكتشف منفذ 8080 تلقائياً
     app.run(host="0.0.0.0", port=PORT)
