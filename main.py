@@ -23,7 +23,7 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "1689271304"))
 ADMIN_CHANNEL_ID = int(os.getenv("ADMIN_CHANNEL_ID", "-1001602685079"))
 LOG_ADMIN_ID = int(os.getenv("LOG_ADMIN_ID", "501030516")) 
 
-WEBHOOK_URL_BASE = os.getenv("WEBHOOK_URL_BASE") # مثال: https://esmat-tlgrambot.onrender.com
+WEBHOOK_URL_BASE = os.getenv("WEBHOOK_URL_BASE") 
 WEBHOOK_PATH = f'/{TOKEN}'
 PORT = int(os.getenv('PORT', '8080'))
 
@@ -35,7 +35,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # --- تهيئة تطبيق Telegram & Flask ---
-# يجب أن يكون التطبيق غير متزامن (async) للعمل مع Webhook
 application = Application.builder().token(TOKEN).updater(None).build()
 app = Flask(__name__)
 
@@ -43,6 +42,7 @@ app = Flask(__name__)
 INFO_FILE = "info.json"
 
 def load_info():
+    """قراءة البيانات من info.json."""
     try:
         with open(INFO_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
@@ -50,6 +50,7 @@ def load_info():
         return {}
 
 def save_info(info_data):
+    """حفظ البيانات إلى info.json."""
     try:
         with open(INFO_FILE, "w", encoding="utf-8") as f:
             json.dump(info_data, f, indent=4, ensure_ascii=False)
@@ -71,18 +72,16 @@ def get_main_keyboard():
 def start_checker_thread():
     """يبدأ تشغيل المهمة الخلفية للـ Checker."""
     global checker_thread
-    # نستخدم try-except لتجنب بدء مهمتين
     if checker_thread is None or not checker_thread.is_alive():
-        # استخدام asyncio.run لتشغيل الدالة اللاتزامنية في Thread منفصل
         checker_thread = threading.Thread(target=asyncio.run, args=(check_and_buy_number_loop(),), daemon=True)
         checker_thread.start()
         logger.info("Checker thread started.")
     
 def stop_checker_thread():
-    """يوقف تشغيل المهمة الخلفية (يتم الإيقاف داخل الحلقة)."""
+    """يوقف تشغيل المهمة الخلفية."""
     info = load_info()
     if info.get("status") == "work":
-        info["status"] = "stopping" # حالة وسيطة للإيقاف اللطيف
+        info["status"] = "stopping" 
         save_info(info)
         logger.info("Checker status set to 'stopping'. Will exit loop soon.")
 
@@ -91,10 +90,9 @@ async def check_and_buy_number_loop():
     """حلقة الشراء اللاتزامنية التي تعمل في Thread الخلفي."""
     info = load_info()
     api_key = info.get("key")
-    countries = info.get("countries", {})
     
-    if not api_key or not countries:
-        logger.warning("Checker cannot run: missing key or countries.")
+    if not api_key:
+        logger.warning("Checker cannot run: missing API key.")
         return
 
     api = SMSManAPI(api_key)
@@ -103,7 +101,6 @@ async def check_and_buy_number_loop():
     while True:
         info_loop = load_info()
         
-        # شرط الإيقاف اللطيف
         if info_loop.get("status") != "work":
             logger.info("Checker loop exiting because status is not 'work'.")
             if info_loop.get("status") == "stopping":
@@ -114,10 +111,8 @@ async def check_and_buy_number_loop():
         try:
             for country_code in info_loop.get("countries", {}).values():
                 
-                # التحقق مجدداً من حالة الإيقاف قبل كل محاولة
                 if load_info().get("status") != "work": break 
                 
-                # استخدام asyncio.to_thread لتشغيل SMSManAPI المتزامن
                 res = await asyncio.to_thread(api.get_number, country_code, "wa")
                 
                 if res.get("ok"):
@@ -150,7 +145,6 @@ async def check_and_buy_number_loop():
             logger.error(f"Error in checker loop: {e}")
             await asyncio.sleep(5)
 
-        # الانتظار بين دورات الدول
         await asyncio.sleep(5) 
         
 checker_thread = None
@@ -158,7 +152,6 @@ checker_thread = None
 # --- Handlers (معالجات أوامر البوت) ---
 
 async def start_command(update: Update, context) -> None:
-    """معالجة أمر /start."""
     if update.effective_user.id != ADMIN_ID: return
     info = load_info()
     info["admin"] = "" 
@@ -168,7 +161,6 @@ async def start_command(update: Update, context) -> None:
 
 
 async def work_command(update: Update, context) -> None:
-    """معالجة أمر /work لتشغيل الصيد."""
     if update.effective_user.id != ADMIN_ID: return
     info = load_info()
     info["status"] = "work"
@@ -179,14 +171,12 @@ async def work_command(update: Update, context) -> None:
 
 
 async def stop_command(update: Update, context) -> None:
-    """معالجة أمر /stop لإيقاف الصيد."""
     if update.effective_user.id != ADMIN_ID: return
     stop_checker_thread()
     await update.message.reply_text("تم ايقاف الصيد (سيتم التوقف بعد انتهاء الدورة الحالية)")
 
 
 async def handle_text_input(update: Update, context) -> None:
-    """معالجة إدخال النص بناءً على حالة الأدمن."""
     if update.effective_user.id != ADMIN_ID: return
 
     info = load_info()
@@ -215,7 +205,6 @@ async def handle_text_input(update: Update, context) -> None:
 
 
 async def handle_callback(update: Update, context) -> None:
-    """معالجة ضغط الأزرار المضمنة."""
     query = update.callback_query
     await query.answer()
 
@@ -294,12 +283,11 @@ application.add_handler(CallbackQueryHandler(handle_callback))
 # --- 🌐 مسارات Flask (Webhooks) ---
 
 @app.route('/set_webhook')
-async def set_webhook_route(): # <== التعديل: أصبح async
+async def set_webhook_route(): 
     """مسار لتحديد Webhook عند النشر."""
     if not WEBHOOK_URL_BASE:
         return jsonify({"status": "error", "message": "WEBHOOK_URL_BASE environment variable is not set."}), 500
 
-    # التعديل: استخدام await و application.bot
     s = await application.bot.set_webhook(url=WEBHOOK_URL_BASE + WEBHOOK_PATH)
     
     if s:
@@ -323,8 +311,26 @@ def index():
     return 'Bot is running via Webhook.'
 
 # --- نقطة التشغيل الرئيسية ---
-if __name__ == "__main__":
+def main() -> None:
+    """بدء تشغيل التطبيق (يشمل تهيئة Application وبدء Flask)."""
     
+    # التعديل الحاسم: تهيئة Application بشكل لاتزامني (Async) قبل بدء التشغيل
+    try:
+        async def init_application():
+            await application.initialize() 
+            # إضافة دالة لتهيئة التخزين إذا كنت تستخدم UserData/ChatData 
+            # if application.persistence: 
+            #     await application.persistence.initialize()
+        
+        # استخدام asyncio.run لتشغيل التهيئة
+        asyncio.run(init_application())
+        logger.info("Telegram Application initialized successfully.")
+        
+    except Exception as e:
+        logger.error(f"FATAL: Error during Telegram application initialization: {e}")
+        # إذا فشلت التهيئة، لا تبدأ تشغيل Flask
+        return
+
     # تشغيل مهمة الـ Checker إذا كانت الحالة "work" عند بدء التطبيق
     info = load_info()
     if info.get("status") == "work":
@@ -332,5 +338,8 @@ if __name__ == "__main__":
         logger.info("Checker thread auto-started.")
         
     # تشغيل Flask
-    # Render يكتشف منفذ 8080 تلقائياً
     app.run(host="0.0.0.0", port=PORT)
+
+
+if __name__ == "__main__":
+    main()
