@@ -18,7 +18,7 @@ from telegram.ext import (
 from sms_man_api import SMSManAPI 
 
 # --- الثوابت والتكوينات (تُقرأ من متغيرات البيئة) ---
-TOKEN = os.getenv("BOT_TOKEN", "7792984680:AAFOxHN6x003Z5kh6jfdvZqeJjB-BvZXDsg")
+TOKEN = os.getenv("BOT_TOKEN", "6096818900:AAH1CUDxw0O3yNgbfgdb6m_tTqLnWCD30mw")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "1689271304"))
 ADMIN_CHANNEL_ID = int(os.getenv("ADMIN_CHANNEL_ID", "-1001602685079"))
 LOG_ADMIN_ID = int(os.getenv("LOG_ADMIN_ID", "501030516")) 
