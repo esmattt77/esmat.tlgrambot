@@ -1,4 +1,3 @@
-requests==2.31.0
-python-telegram-bot==20.8
-Django>=4.0
-Pillow
+Flask
+python-telegram-bot==20.8 
+requests
