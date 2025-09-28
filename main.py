@@ -14,6 +14,7 @@ from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 )
 
+# تأكد من أن الملف sms_man_api.py موجود
 from sms_man_api import SMSManAPI 
 
 # --- الثوابت والتكوينات (تُقرأ من متغيرات البيئة) ---
@@ -109,7 +110,8 @@ async def check_and_buy_number_loop():
             break
             
         try:
-            for country_code in info_loop.get("countries", {}).values():
+            # استخدام countries_dict.items() لتجنب التكرار في قراءة info
+            for code, country_code in info_loop.get("countries", {}).items(): 
                 
                 if load_info().get("status") != "work": break 
                 
@@ -179,25 +181,25 @@ async def handle_text_input(update: Update, context) -> None:
 
     info = load_info()
     current_state = info.get("admin")
-    text = update.message.text.strip() # استخدام .strip()
+    text = update.message.text.strip() # مُحسن لضمان عدم وجود مسافات
     
     if not current_state: return
 
     if current_state == "add":
-        # التصحيح هنا: حفظ الكود الداخلي الفريد (للحذف) وقيمة رمز الدولة (لـ SMS-Man)
+        # التصحيح: حفظ الكود الداخلي الفريد (للحذف) وقيمة رمز الدولة (لـ SMS-Man)
         code = str(uuid4())[:8] 
         info["countries"] = info.get("countries", {})
-        info["countries"][code] = text  # القيمة هي رمز الدولة (مثل DZ)
+        info["countries"][code] = text 
         await update.message.reply_text(
             f"تمت الاضافة بنجاح\n**رمز الدولة لـ SMS-Man**: `{text}`\n**كود الحذف**: `{code}`\n(استخدم كود الحذف لحذف الدولة لاحقاً)", 
             parse_mode="Markdown"
         )
     elif current_state == "del":
-        # الآن يمكننا استخدام الكود المرسل للحذف مباشرة
+        # الحذف باستخدام الكود المرسل (يجب أن يكون مطابقاً لكود الحذف)
         if info.get("countries", {}).pop(text, None) is not None:
             await update.message.reply_text("تم الحذف بنجاح")
         else:
-            await update.message.reply_text("لاتوجد دولة مضافة بهذا الكود")
+            await update.message.reply_text(f"لاتوجد دولة مضافة بهذا الكود: `{text}`", parse_mode="Markdown")
     elif current_state == "up":
         info["key"] = text
         await update.message.reply_text("تم الحفظ بنجاح")
@@ -236,18 +238,20 @@ async def handle_callback(update: Update, context) -> None:
         elif data == "all":
             countries_dict = info.get("countries", {})
             if countries_dict:
-                # التصحيح: عرض الكود الداخلي (للحذف) ورمز الدولة (لـ SMS-Man)
-                display_text = "📊 **قائمة الدول المضافة**:\n\n"
+                # التصحيح: استخدام نافذة تنبيه (show_alert=True) لعرض القائمة
+                display_text = "📊 قائمة الدول المضافة:\n\n"
                 for code, country in countries_dict.items():
-                    display_text += f"رمز الدولة (SMS-Man): `{country}`\nكود الحذف: `{code}`\n---\n"
-            else:
-                display_text = "لا توجد دول مضافة حالياً. استخدم زر 'اضافة دولة ➕' للبدء."
+                    display_text += f"رمز الدولة (SMS-Man): {country}\nكود الحذف: {code}\n---\n"
                 
-            await query.edit_message_text(
-                display_text, 
-                parse_mode="Markdown", 
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("رجوع🔙", callback_data="back")]])
-            )
+                await query.answer(
+                    text=display_text, 
+                    show_alert=True 
+                )
+            else:
+                await query.answer(
+                    text="لا توجد دول مضافة حالياً.", 
+                    show_alert=True
+                )
             return
             
         elif data in ["add", "del", "up"]:
