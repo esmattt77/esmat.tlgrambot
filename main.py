@@ -5,29 +5,25 @@ import logging
 import asyncio
 import os
 import threading
-import sys  # لاستخدامه في الخروج الآمن إذا لم يتم العثور على التوكن
+import sys
 from uuid import uuid4
 from flask import Flask, request, jsonify
 
-# استيراد من python-telegram-bot
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 )
 
-# تأكد من أن الملف sms_man_api.py موجود
 from sms_man_api import SMSManAPI 
 
 # --- الثوابت والتكوينات (تُقرأ من متغيرات البيئة) ---
 
-# التعديل الرئيسي: الاعتماد كلياً على متغير البيئة
 TOKEN = os.getenv("BOT_TOKEN")
 if not TOKEN:
     logging.error("FATAL: BOT_TOKEN environment variable is not set. Exiting.")
     sys.exit(1)
     
-# باقي المتغيرات تستخدم قيم افتراضية آمنة في حال الفشل
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0")) # يجب أن تفشل الأوامر إذا لم يتم تعيينه
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 ADMIN_CHANNEL_ID = int(os.getenv("ADMIN_CHANNEL_ID", "-1000000000000"))
 LOG_ADMIN_ID = int(os.getenv("LOG_ADMIN_ID", "0")) 
 
@@ -49,7 +45,6 @@ app = Flask(__name__)
 # --- دوال مساعدة لحفظ وتحميل البيانات ---
 INFO_FILE = "info.json"
 
-# ... (دوال load_info و save_info و get_main_keyboard لم تتغير) ...
 def load_info():
     try:
         with open(INFO_FILE, "r", encoding="utf-8") as f:
@@ -73,15 +68,11 @@ def get_main_keyboard():
         [InlineKeyboardButton("الدول المضافة 📊", callback_data="all")],
     ])
 
-
 # --- 🎯 منطق الـ Checker (شراء الأرقام) كـ Thread منفصل ---
-
-# ... (دوال start_checker_thread و stop_checker_thread و check_and_buy_number_loop لم تتغير) ...
 
 checker_thread = None
 
 def start_checker_thread():
-    """يبدأ تشغيل المهمة الخلفية للـ Checker."""
     global checker_thread
     if checker_thread is None or not checker_thread.is_alive():
         checker_thread = threading.Thread(target=asyncio.run, args=(check_and_buy_number_loop(),), daemon=True)
@@ -89,7 +80,6 @@ def start_checker_thread():
         logger.info("Checker thread started.")
     
 def stop_checker_thread():
-    """يوقف تشغيل المهمة الخلفية."""
     info = load_info()
     if info.get("status") == "work":
         info["status"] = "stopping" 
@@ -98,7 +88,6 @@ def stop_checker_thread():
 
 
 async def check_and_buy_number_loop():
-    """حلقة الشراء اللاتزامنية التي تعمل في Thread الخلفي."""
     info = load_info()
     api_key = info.get("key")
     
@@ -160,8 +149,6 @@ async def check_and_buy_number_loop():
 
 # --- Handlers (معالجات أوامر البوت) ---
 
-# ... (بقية الـ Handlers لم تتغير) ...
-
 async def start_command(update: Update, context) -> None:
     if update.effective_user.id != ADMIN_ID: return
     info = load_info()
@@ -192,16 +179,21 @@ async def handle_text_input(update: Update, context) -> None:
 
     info = load_info()
     current_state = info.get("admin")
-    text = update.message.text
+    text = update.message.text.strip() # استخدام .strip()
     
     if not current_state: return
 
     if current_state == "add":
+        # التصحيح هنا: حفظ الكود الداخلي الفريد (للحذف) وقيمة رمز الدولة (لـ SMS-Man)
         code = str(uuid4())[:8] 
         info["countries"] = info.get("countries", {})
-        info["countries"][code] = text
-        await update.message.reply_text(f"تمت الاضافة بنجاح\nكود الدولة: `{code}`\n(يستخدم هذا الكود عند الرغبة بحذف الدولة)", parse_mode="Markdown")
+        info["countries"][code] = text  # القيمة هي رمز الدولة (مثل DZ)
+        await update.message.reply_text(
+            f"تمت الاضافة بنجاح\n**رمز الدولة لـ SMS-Man**: `{text}`\n**كود الحذف**: `{code}`\n(استخدم كود الحذف لحذف الدولة لاحقاً)", 
+            parse_mode="Markdown"
+        )
     elif current_state == "del":
+        # الآن يمكننا استخدام الكود المرسل للحذف مباشرة
         if info.get("countries", {}).pop(text, None) is not None:
             await update.message.reply_text("تم الحذف بنجاح")
         else:
@@ -216,7 +208,6 @@ async def handle_text_input(update: Update, context) -> None:
 
 
 async def handle_callback(update: Update, context) -> None:
-    """معالجة ضغط الأزرار المضمنة."""
     query = update.callback_query
     
     # التعديل: الرد الفوري على الاستعلام لتجنب خطأ 'Event loop is closed'
@@ -244,8 +235,19 @@ async def handle_callback(update: Update, context) -> None:
 
         elif data == "all":
             countries_dict = info.get("countries", {})
-            display_text = "\n".join([f"[{code}] : {country}" for code, country in countries_dict.items()]) if countries_dict else "لا توجد دول مضافة"
-            await query.answer(text=display_text, show_alert=True)
+            if countries_dict:
+                # التصحيح: عرض الكود الداخلي (للحذف) ورمز الدولة (لـ SMS-Man)
+                display_text = "📊 **قائمة الدول المضافة**:\n\n"
+                for code, country in countries_dict.items():
+                    display_text += f"رمز الدولة (SMS-Man): `{country}`\nكود الحذف: `{code}`\n---\n"
+            else:
+                display_text = "لا توجد دول مضافة حالياً. استخدم زر 'اضافة دولة ➕' للبدء."
+                
+            await query.edit_message_text(
+                display_text, 
+                parse_mode="Markdown", 
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("رجوع🔙", callback_data="back")]])
+            )
             return
             
         elif data in ["add", "del", "up"]:
@@ -253,11 +255,15 @@ async def handle_callback(update: Update, context) -> None:
                 await query.answer(text="لايمكنك اضافة api key جديد الا بعد حذف القديم", show_alert=True)
                 return
             
-            text_msg = "قم بارسال رمز الدولة في موقع sms-man" if data == "add" else \
-                       "قم بارسال كود الدولة" if data == "del" else \
-                       "قم بارسال api key الخاص بحسابك"
+            # التصحيح: رسائل التوجيه الواضحة
+            if data == "add":
+                text_msg = "✅ **لتضيف دولة جديدة:**\n\nقم بإرسال رمز الدولة المكون من حرفين *فقط* (مثل: `DZ`، `US`، `EG`). تجده في موقع SMS-Man. مثال: `DZ`"
+            elif data == "del":
+                text_msg = "🗑️ **لحذف دولة:**\n\nقم بإرسال *كود الحذف* المكون من 8 محارف والذي يظهر عند إضافة الدولة أو في قائمة الدول المضافة."
+            elif data == "up":
+                text_msg = "🔑 **لرفع API Key:**\n\nقم بإرسال API Key الخاص بحسابك في SMS-Man."
             
-            await query.edit_message_text(text_msg, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("رجوع🔙", callback_data="back")]]))
+            await query.edit_message_text(text_msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("رجوع🔙", callback_data="back")]]))
             info["admin"] = data
             save_info(info)
             return
@@ -277,7 +283,6 @@ async def handle_callback(update: Update, context) -> None:
         if res.get("ok") and code and code != "0": 
             await query.edit_message_text(f"تم وصول الكود بنجاح:\n📞 الرقم: {number}\n🔒 الكود: {code}", message_id=message_id, chat_id=chat_id)
         else:
-            # يجب الإجابة على الاستعلام حتى لو لم يصل الكود، لكن هذا تم بالفعل في البداية
             await query.edit_message_text(f"🚫 لم يصل الكود بعد للرقم {number}", message_id=message_id, chat_id=chat_id)
             
     elif ex[0] == "ban":
