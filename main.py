@@ -74,11 +74,25 @@ def get_main_keyboard():
 checker_thread = None
 
 def start_checker_thread():
+    """يبدأ تشغيل المهمة الخلفية للـ Checker."""
     global checker_thread
+    
+    # التعديل الحاسم: تعريف دالة لتشغيل حلقة حدث جديدة للـ Thread
+    def run_checker():
+        try:
+            # تهيئة حلقة حدث جديدة لهذا الـ Thread (ضروري للعمليات اللاتزامنية المستمرة)
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            # تشغيل الدالة اللاتزامنية في هذه الحلقة الجديدة
+            loop.run_until_complete(check_and_buy_number_loop())
+        except Exception as e:
+            logger.error(f"Error in checker thread setup: {e}")
+    
     if checker_thread is None or not checker_thread.is_alive():
-        checker_thread = threading.Thread(target=asyncio.run, args=(check_and_buy_number_loop(),), daemon=True)
+        # تشغيل الدالة run_checker داخل Thread
+        checker_thread = threading.Thread(target=run_checker, daemon=True)
         checker_thread.start()
-        logger.info("Checker thread started.")
+        logger.info("Checker thread started with dedicated event loop.")
     
 def stop_checker_thread():
     info = load_info()
@@ -110,11 +124,11 @@ async def check_and_buy_number_loop():
             break
             
         try:
-            # استخدام countries_dict.items() لتجنب التكرار في قراءة info
             for code, country_code in info_loop.get("countries", {}).items(): 
                 
                 if load_info().get("status") != "work": break 
                 
+                # Note: api.get_number is assumed to be synchronous, hence asyncio.to_thread
                 res = await asyncio.to_thread(api.get_number, country_code, "wa")
                 
                 if res.get("ok"):
@@ -134,6 +148,7 @@ async def check_and_buy_number_loop():
                         ]
                         reply_markup = InlineKeyboardMarkup(keyboard)
                         
+                        # هذه هي العملية التي كانت تفشل بسبب إغلاق حلقة الحدث
                         await bot.send_message(
                             chat_id=ADMIN_CHANNEL_ID,
                             text=txt, parse_mode="Markdown", reply_markup=reply_markup
@@ -181,12 +196,11 @@ async def handle_text_input(update: Update, context) -> None:
 
     info = load_info()
     current_state = info.get("admin")
-    text = update.message.text.strip() # مُحسن لضمان عدم وجود مسافات
+    text = update.message.text.strip() 
     
     if not current_state: return
 
     if current_state == "add":
-        # التصحيح: حفظ الكود الداخلي الفريد (للحذف) وقيمة رمز الدولة (لـ SMS-Man)
         code = str(uuid4())[:8] 
         info["countries"] = info.get("countries", {})
         info["countries"][code] = text 
@@ -195,7 +209,6 @@ async def handle_text_input(update: Update, context) -> None:
             parse_mode="Markdown"
         )
     elif current_state == "del":
-        # الحذف باستخدام الكود المرسل (يجب أن يكون مطابقاً لكود الحذف)
         if info.get("countries", {}).pop(text, None) is not None:
             await update.message.reply_text("تم الحذف بنجاح")
         else:
@@ -212,7 +225,6 @@ async def handle_text_input(update: Update, context) -> None:
 async def handle_callback(update: Update, context) -> None:
     query = update.callback_query
     
-    # التعديل: الرد الفوري على الاستعلام لتجنب خطأ 'Event loop is closed'
     try:
         await query.answer() 
     except Exception as e:
@@ -238,7 +250,6 @@ async def handle_callback(update: Update, context) -> None:
         elif data == "all":
             countries_dict = info.get("countries", {})
             if countries_dict:
-                # التصحيح: استخدام نافذة تنبيه (show_alert=True) لعرض القائمة
                 display_text = "📊 قائمة الدول المضافة:\n\n"
                 for code, country in countries_dict.items():
                     display_text += f"رمز الدولة (SMS-Man): {country}\nكود الحذف: {code}\n---\n"
@@ -259,7 +270,6 @@ async def handle_callback(update: Update, context) -> None:
                 await query.answer(text="لايمكنك اضافة api key جديد الا بعد حذف القديم", show_alert=True)
                 return
             
-            # التصحيح: رسائل التوجيه الواضحة
             if data == "add":
                 text_msg = "✅ **لتضيف دولة جديدة:**\n\nقم بإرسال رمز الدولة المكون من حرفين *فقط* (مثل: `DZ`، `US`، `EG`). تجده في موقع SMS-Man. مثال: `DZ`"
             elif data == "del":
@@ -278,7 +288,6 @@ async def handle_callback(update: Update, context) -> None:
             await query.edit_message_text("تم الحذف بنجاح", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("رجوع🔙", callback_data="back")]]))
             return
             
-    # معالجة أوامر الـ Callback العامة (getCode و ban)
     if ex[0] == "getCode":
         operation_id = ex[1]; number = ex[2]
         res = await asyncio.to_thread(api.get_code, operation_id)
@@ -341,6 +350,7 @@ def main() -> None:
         async def init_application():
             await application.initialize() 
         
+        # التأكد من تشغيل التهيئة بشكل لاتزامني صحيح
         asyncio.run(init_application())
         logger.info("Telegram Application initialized successfully.")
         
@@ -350,6 +360,7 @@ def main() -> None:
 
     info = load_info()
     if info.get("status") == "work":
+        # تشغيل الـ Thread الآن سيستخدم منطق run_checker المعدل
         start_checker_thread()
         logger.info("Checker thread auto-started.")
         
