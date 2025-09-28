@@ -9,6 +9,7 @@ import sys
 from uuid import uuid4
 from flask import Flask, request, jsonify
 
+# استيراد من python-telegram-bot
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
@@ -24,6 +25,7 @@ if not TOKEN:
     logging.error("FATAL: BOT_TOKEN environment variable is not set. Exiting.")
     sys.exit(1)
     
+# القيم الافتراضية يجب أن تكون آمنة (0 أو قيمة غير صالحة)
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 ADMIN_CHANNEL_ID = int(os.getenv("ADMIN_CHANNEL_ID", "-1000000000000"))
 LOG_ADMIN_ID = int(os.getenv("LOG_ADMIN_ID", "0")) 
@@ -51,7 +53,8 @@ def load_info():
         with open(INFO_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
-        return {}
+        # التأكد من إرجاع هيكل بيانات أساسي إذا لم يكن الملف موجودًا أو تالفًا
+        return {"countries": {}, "key": None, "status": None, "admin": ""}
 
 def save_info(info_data):
     try:
@@ -74,22 +77,20 @@ def get_main_keyboard():
 checker_thread = None
 
 def start_checker_thread():
-    """يبدأ تشغيل المهمة الخلفية للـ Checker."""
+    """يبدأ تشغيل المهمة الخلفية للـ Checker مع حلقة حدث مخصصة."""
     global checker_thread
     
-    # التعديل الحاسم: تعريف دالة لتشغيل حلقة حدث جديدة للـ Thread
+    # دالة لتشغيل حلقة حدث جديدة للـ Thread
     def run_checker():
         try:
             # تهيئة حلقة حدث جديدة لهذا الـ Thread (ضروري للعمليات اللاتزامنية المستمرة)
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            # تشغيل الدالة اللاتزامنية في هذه الحلقة الجديدة
             loop.run_until_complete(check_and_buy_number_loop())
         except Exception as e:
             logger.error(f"Error in checker thread setup: {e}")
     
     if checker_thread is None or not checker_thread.is_alive():
-        # تشغيل الدالة run_checker داخل Thread
         checker_thread = threading.Thread(target=run_checker, daemon=True)
         checker_thread.start()
         logger.info("Checker thread started with dedicated event loop.")
@@ -128,7 +129,6 @@ async def check_and_buy_number_loop():
                 
                 if load_info().get("status") != "work": break 
                 
-                # Note: api.get_number is assumed to be synchronous, hence asyncio.to_thread
                 res = await asyncio.to_thread(api.get_number, country_code, "wa")
                 
                 if res.get("ok"):
@@ -148,7 +148,6 @@ async def check_and_buy_number_loop():
                         ]
                         reply_markup = InlineKeyboardMarkup(keyboard)
                         
-                        # هذه هي العملية التي كانت تفشل بسبب إغلاق حلقة الحدث
                         await bot.send_message(
                             chat_id=ADMIN_CHANNEL_ID,
                             text=txt, parse_mode="Markdown", reply_markup=reply_markup
@@ -203,6 +202,7 @@ async def handle_text_input(update: Update, context) -> None:
     if current_state == "add":
         code = str(uuid4())[:8] 
         info["countries"] = info.get("countries", {})
+        # يجب التأكد من أن المفتاح هو كود الحذف والقيمة هي رمز الدولة
         info["countries"][code] = text 
         await update.message.reply_text(
             f"تمت الاضافة بنجاح\n**رمز الدولة لـ SMS-Man**: `{text}`\n**كود الحذف**: `{code}`\n(استخدم كود الحذف لحذف الدولة لاحقاً)", 
@@ -225,10 +225,11 @@ async def handle_text_input(update: Update, context) -> None:
 async def handle_callback(update: Update, context) -> None:
     query = update.callback_query
     
+    # 1. الرد الفوري لتجنب خطأ Event loop is closed
     try:
         await query.answer() 
     except Exception as e:
-        logger.error(f"Failed to answer callback query (Continuing execution): {e}")
+        logger.error(f"Failed to answer callback query: {e}") 
 
     data = query.data
     chat_id = query.message.chat_id
@@ -237,7 +238,9 @@ async def handle_callback(update: Update, context) -> None:
     
     info = load_info()
     api_key = info.get("key")
-    api = SMSManAPI(api_key)
+    
+    # تهيئة API Key هنا فقط عند الحاجة إليه
+    api = SMSManAPI(api_key) if api_key else None
     
     if query.from_user.id == ADMIN_ID:
         
@@ -250,24 +253,23 @@ async def handle_callback(update: Update, context) -> None:
         elif data == "all":
             countries_dict = info.get("countries", {})
             if countries_dict:
-                display_text = "📊 قائمة الدول المضافة:\n\n"
+                display_text = "📊 **قائمة الدول المضافة**:\n\n"
                 for code, country in countries_dict.items():
-                    display_text += f"رمز الدولة (SMS-Man): {country}\nكود الحذف: {code}\n---\n"
-                
-                await query.answer(
-                    text=display_text, 
-                    show_alert=True 
-                )
+                    display_text += f"رمز الدولة (SMS-Man): `{country}`\nكود الحذف: `{code}`\n---\n"
             else:
-                await query.answer(
-                    text="لا توجد دول مضافة حالياً.", 
-                    show_alert=True
-                )
+                display_text = "لا توجد دول مضافة حالياً."
+                
+            # إرسال كرسالة جديدة أو تعديل لضمان الظهور
+            await query.edit_message_text(
+                display_text, 
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("رجوع🔙", callback_data="back")]])
+            )
             return
             
         elif data in ["add", "del", "up"]:
             if data == "up" and api_key is not None:
-                await query.answer(text="لايمكنك اضافة api key جديد الا بعد حذف القديم", show_alert=True)
+                await query.edit_message_text(text="لايمكنك اضافة api key جديد الا بعد حذف القديم", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("رجوع🔙", callback_data="back")]]))
                 return
             
             if data == "add":
@@ -288,6 +290,13 @@ async def handle_callback(update: Update, context) -> None:
             await query.edit_message_text("تم الحذف بنجاح", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("رجوع🔙", callback_data="back")]]))
             return
             
+    # معالجة أوامر الـ Callback العامة (getCode و ban)
+    if not api:
+        logger.warning("API key is missing for getCode/ban operation.")
+        # تجنب فشل البوت إذا كان الـ API مفقودًا
+        await query.message.reply_text("عذراً، API Key غير متوفر لإجراء هذه العملية.")
+        return 
+
     if ex[0] == "getCode":
         operation_id = ex[1]; number = ex[2]
         res = await asyncio.to_thread(api.get_code, operation_id)
@@ -350,7 +359,6 @@ def main() -> None:
         async def init_application():
             await application.initialize() 
         
-        # التأكد من تشغيل التهيئة بشكل لاتزامني صحيح
         asyncio.run(init_application())
         logger.info("Telegram Application initialized successfully.")
         
@@ -360,7 +368,6 @@ def main() -> None:
 
     info = load_info()
     if info.get("status") == "work":
-        # تشغيل الـ Thread الآن سيستخدم منطق run_checker المعدل
         start_checker_thread()
         logger.info("Checker thread auto-started.")
         
