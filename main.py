@@ -1,6 +1,7 @@
 import os
 import json
 import sqlite3
+import telegram
 import logging
 from flask import Flask, request, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
