@@ -636,20 +636,26 @@ def index():
     """مسار صحي للتحقق من أن الخادم يعمل."""
     return "Telegram Bot Webhook is running!", 200
 
+# ==============================================================================
+# 4. مسارات Flask (Routing) - مُعدَّل
+# ==============================================================================
+
 @app.route('/set_webhook', methods=['GET', 'POST'])
 async def set_webhook():
     """مسار لإعداد الـ Webhook في Telegram."""
     if not WEBHOOK_URL:
-        return jsonify({"status": "error", "message": "WEBHOOK_URL not set."}), 500
-        
+        return jsonify({"status": "error", "message": "WEBHOOK_URL not set in environment variables."}), 500
+    
+    # يجب تهيئة التطبيق قبل استخدام البوت لضبط الـ Webhook
+    await application.initialize() 
+    
     await application.bot.set_webhook(url=WEBHOOK_URL, secret_token=SECRET_TOKEN)
-    return jsonify({"status": "ok", "message": f"Webhook set to: {WEBHOOK_URL}"}), 200
+    return jsonify({"status": "ok", "message": f"تم ضبط خطاف الويب على: {WEBHOOK_URL}"}), 200
 
 @app.route('/telegram', methods=['POST'])
 async def telegram_webhook():
     """مسار استقبال تحديثات Telegram."""
     
-    # التحقق من التوكن السري
     if request.headers.get('X-Telegram-Bot-Api-Secret-Token') != SECRET_TOKEN:
         logger.warning("Unauthorized access attempt to webhook.")
         return 'Unauthorized', 403
@@ -657,6 +663,10 @@ async def telegram_webhook():
     try:
         data = request.get_json(force=True)
         update = Update.de_json(data, application.bot)
+        
+        # يجب تهيئة التطبيق قبل معالجة أي تحديث وارد
+        await application.initialize() 
+        
         await application.process_update(update)
 
     except Exception as e:
