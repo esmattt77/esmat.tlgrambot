@@ -1,3 +1,4 @@
 Flask
+asgiref
 python-telegram-bot[webhooks]==20.8
 requests
