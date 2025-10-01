@@ -4,6 +4,7 @@ import sqlite3
 import telegram
 import logging
 import asyncio 
+import threading # 🔑 الحل الجذري لمشكلة Event Loop
 from flask import Flask, request, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -21,7 +22,6 @@ from telegram.ext import (
 # ==============================================================================
 
 TOKEN = os.environ.get("BOT_TOKEN")
-# تأكد من تعيين هذا المتغير بشكل صحيح في Render
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "0")) 
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
 PORT = int(os.environ.get("PORT", "5000")) 
@@ -42,6 +42,9 @@ AWAITING_TRANSFER_AMOUNT, AWAITING_TRANSFER_TARGET = range(3, 5)
 # ==============================================================================
 # 2. دوال قاعدة البيانات (Database Functions)
 # ==============================================================================
+
+# ... (دوال قاعدة البيانات: init_db, get_user, update_user_balance, add_referral, get_all_files, add_file_to_db)
+# (يتم الحفاظ عليها كما هي)
 
 def init_db():
     conn = sqlite3.connect(DATABASE_NAME)
@@ -121,13 +124,13 @@ def add_file_to_db(name, price, file_link):
         return False
     finally:
         conn.close()
-        
+
+
 # ==============================================================================
 # 3. دوال الواجهة (UI & Check Functions)
 # ==============================================================================
 
 async def check_subscription(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    # ... (دالة التحقق من الاشتراك)
     for channel_username in REQUIRED_CHANNELS:
         channel = channel_username.strip()
         if not channel: continue
@@ -136,11 +139,11 @@ async def check_subscription(user_id: int, context: ContextTypes.DEFAULT_TYPE) -
             if member.status not in ["member", "administrator", "creator"]:
                 return False
         except Exception:
+            # تجاهل الأخطاء التي تحدث عند محاولة جلب معلومات القناة
             return False 
     return True
 
 async def prompt_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # ... (دالة طلب الاشتراك)
     message = update.effective_message 
     
     buttons = []
@@ -158,7 +161,6 @@ async def prompt_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
 
 async def get_main_menu_markup(user_id):
-    # ... (إنشاء أزرار القائمة الرئيسية للمستخدمين)
     user = get_user(user_id)
     balance = user['balance']
     
@@ -177,7 +179,6 @@ async def get_main_menu_markup(user_id):
     return InlineKeyboardMarkup(keyboard)
 
 async def get_main_menu_text(user_id):
-    # ... (نص القائمة الرئيسية للمستخدمين)
     user = get_user(user_id)
     balance = user['balance']
     
@@ -192,13 +193,13 @@ async def get_main_menu_text(user_id):
     )
     
 async def edit_to_main_menu(message: telegram.Message, context: ContextTypes.DEFAULT_TYPE, user_id: int):
-    # ... (تعديل القائمة الرئيسية للمستخدمين)
     markup = await get_main_menu_markup(user_id)
     text = await get_main_menu_text(user_id)
     
     try:
         await message.edit_text(text, reply_markup=markup, parse_mode='HTML')
     except telegram.error.BadRequest:
+        # إذا لم يكن هناك شيء للتعديل أو كانت الرسالة قديمة
         await message.reply_text(text, reply_markup=markup, parse_mode='HTML')
 
 # ==============================================================================
@@ -206,7 +207,6 @@ async def edit_to_main_menu(message: telegram.Message, context: ContextTypes.DEF
 # ==============================================================================
 
 async def register_pending_referral(user_id, context: ContextTypes.DEFAULT_TYPE):
-    # ... (دالة تسجيل الإحالة)
     user = get_user(user_id)
     
     if 'pending_referrer' in context.user_data and user.get('referrer_id') == 0:
@@ -224,15 +224,14 @@ async def register_pending_referral(user_id, context: ContextTypes.DEFAULT_TYPE)
     return False
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # ... (دالة /start)
     user_id = update.effective_user.id
-    message = update.message
     
-    # 1. إذا كان المشرف، نرسله للوحة المشرف مباشرة
+    # 1. التحقق من المشرف وعرض قائمة المشرف مباشرة
     if user_id == ADMIN_ID:
         await admin_panel(update, context)
         return
         
+    # 2. مستخدم عادي: متابعة عملية البدء العادية
     user = get_user(user_id)
     
     if context.args:
@@ -255,9 +254,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     markup = await get_main_menu_markup(user_id)
     text = await get_main_menu_text(user_id)
     
-    await message.reply_text(text, reply_markup=markup, parse_mode='HTML')
+    await update.message.reply_text(text, reply_markup=markup, parse_mode='HTML')
+
 
 # ... (بقية دوال المستخدم: show_files_menu, show_earn_ruble_menu, prompt_buy_file, confirm_buy_file, transfer_start, receive_transfer_amount, receive_transfer_target, cancel_transfer)
+# (يتم الحفاظ عليها كما هي)
 
 async def show_files_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
@@ -382,8 +383,6 @@ async def confirm_buy_file(update: Update, context: ContextTypes.DEFAULT_TYPE, f
         parse_mode='HTML'
     )
     
-# ... (دوال تحويل الروبل: transfer_start, receive_transfer_amount, receive_transfer_target, cancel_transfer)
-
 async def transfer_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
@@ -455,9 +454,8 @@ async def cancel_transfer(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await query.edit_message_text("✅ تم إلغاء عملية التحويل.", reply_markup=await get_main_menu_markup(query.from_user.id))
     return ConversationHandler.END
 
-
 # ==============================================================================
-# 6. معالجات المشرف (Admin Handlers) - مميزة ومنفصلة
+# 6. معالجات المشرف (Admin Handlers)
 # ==============================================================================
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -473,18 +471,15 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    # التحقق من نوع التحديث لإرسال الرسالة بشكل صحيح
     message = update.effective_message
     
     try:
-        # إذا كان callback query (زر) نحاول التعديل
         if update.callback_query:
             await update.callback_query.edit_message_text(
                 "👑 **لوحة تحكم المشرف المتميزة** 👑\n\nاختر الإجراء الذي تريده:",
                 reply_markup=reply_markup,
                 parse_mode='HTML'
             )
-        # إذا كانت رسالة (/admin) نرسل رسالة جديدة
         else:
              await message.reply_text(
                 "👑 **لوحة تحكم المشرف المتميزة** 👑\n\nاختر الإجراء الذي تريده:",
@@ -500,19 +495,19 @@ async def admin_prompt_add_file(update: Update, context: ContextTypes.DEFAULT_TY
     await query.answer()
 
     await query.edit_message_text(
-        "أدخل **اسم الملف ووصفه الكامل** (مثال:\n• ملف انشاء كروبات 💎\n• ينشأ بليوم 50 كروب ويخلي السجل ضاهر وينشر بي خمس رسايل 💜\n\n**نوع الملف** php أو py)",
+        "أدخل **اسم الملف ووصفه الكامل** (مثال:\n• ملف انشاء كروبات 💎\n• ينشأ بليوم 50 كروب\n\n**نوع الملف** php أو py)",
         parse_mode='HTML',
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ إلغاء العملية", callback_data='cancel_admin')]])
     )
     return AWAITING_FILE_NAME
 
 async def admin_receive_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """استقبال الاسم والوصف الكامل وطلب السعر. (الإصلاح النهائي لـ Event Loop)"""
+    """استقبال الاسم والوصف الكامل وطلب السعر. (استخدام send_message لزيادة الاستقرار)"""
     
     context.user_data['new_file_name'] = update.message.text 
     
     try:
-        # استخدام context.bot.send_message بدلاً من update.message.reply_text لضمان استجابة أسرع
+        # استخدام context.bot.send_message لزيادة الاستقرار
         await context.bot.send_message(
             chat_id=update.effective_chat.id,
             text="أدخل **سعر الملف** بالروبل (عدد عشري/صحيح):", 
@@ -523,7 +518,7 @@ async def admin_receive_name(update: Update, context: ContextTypes.DEFAULT_TYPE)
         # إذا فشل، نغلق المحادثة ونبلغ المشرف
         await update.message.reply_text("❌ حدث خطأ في الشبكة (قد تكون مشكلة Event Loop). تم إلغاء العملية. يرجى المحاولة مرة أخرى باستخدام /admin.")
         context.user_data.clear()
-        return ConversationHandler.END # إنهاء المحادثة بشكل سليم
+        return ConversationHandler.END 
 
     return AWAITING_FILE_PRICE
 
@@ -558,7 +553,6 @@ async def admin_receive_link(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def cancel_admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """إلغاء عملية المشرف وضمان العودة للوحة التحكم."""
-    user_id = update.effective_user.id
     context.user_data.clear()
     
     if update.callback_query:
@@ -592,10 +586,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user_id = query.from_user.id
     message = query.message
     
-    # الرد الفوري لـ Telegram لتجنب Timeout
+    # الرد الفوري لـ Telegram لتجنب Timeout وللمساعدة في حل خطأ Event Loop
     await query.answer()
 
-    # 1. وظائف المشرف
+    # 1. وظائف المشرف (تتم معالجتها فقط إذا كان المستخدم هو المشرف)
     if user_id == ADMIN_ID:
         if data == 'show_admin_panel':
             await admin_panel(update, context)
@@ -603,11 +597,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         elif data == 'admin_close_panel':
             await admin_close_panel(update, context)
             return
-    # إذا كان المشرف يحاول الوصول لأزرار المستخدم
-    elif user_id != ADMIN_ID and data in ['admin_list_files', 'admin_stats', 'admin_edit_balance', 'admin_broadcast']:
-         await query.answer("❌ لا تملك صلاحية.", show_alert=True)
-
-
+        elif data == 'admin_list_files' or data == 'admin_stats' or data == 'admin_edit_balance' or data == 'admin_broadcast':
+            # نضمن أن الأزرار الإدارية غير المنفذة لا تسبب أخطاء
+            await query.answer("هذه الوظيفة الإدارية لم تُنفذ بعد.", show_alert=True)
+            return
+    
     # 2. وظائف القائمة الرئيسية للمستخدمين
     if data == 'check_and_main_menu' or data == 'check_sub':
         is_subscribed = await check_subscription(user_id, context)
@@ -630,10 +624,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         referrer_info = f"بواسطة {user['referrer_id']}" if user['referrer_id'] != 0 else "لا يوجد"
         await query.answer(f"معلوماتك:\nالآيدي: {user_id}\nالرصيد: {user['balance']:.2f} روبل\nالإحالات: {user['referral_count']}\nالمُحيل: {referrer_info}", show_alert=True)
         
-    elif data in ['buy_points', 'buy_hosting', 'free_ruble', 'proof_channel', 'admin_list_files', 'admin_stats', 'admin_edit_balance', 'admin_broadcast']:
-        # هذا الجزء يضمن عدم الانهيار إذا ضغط مستخدم عادي على زر إداري
-        if user_id != ADMIN_ID:
-             await query.answer("لم يتم تنفيذ هذه الوظيفة بعد. نعتذر للإزعاج.", show_alert=True)
+    elif data in ['buy_points', 'buy_hosting', 'free_ruble', 'proof_channel']:
+        await query.answer("لم يتم تنفيذ هذه الوظيفة بعد. نعتذر للإزعاج.", show_alert=True)
 
     # 3. شراء الملفات
     elif data.startswith('buy_file_'):
@@ -645,7 +637,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await confirm_buy_file(update, context, file_name)
 
 # ==============================================================================
-# 8. إعداد Flask و Webhook
+# 8. إعداد Flask و Webhook - الحل النهائي لـ Event Loop
 # ==============================================================================
 
 init_db()
@@ -654,11 +646,9 @@ app = Flask(__name__)
 application = Application.builder().token(TOKEN).updater(None).build()
 
 # إضافة جميع الـ Handlers
-
 admin_add_file_conv = ConversationHandler(
     entry_points=[CallbackQueryHandler(admin_prompt_add_file, pattern='^admin_add_file$')],
     states={
-        # تم تعديل الفلتر لضمان أن المشرف فقط هو من يمكنه الرد
         AWAITING_FILE_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND & filters.User(ADMIN_ID), admin_receive_name)],
         AWAITING_FILE_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND & filters.User(ADMIN_ID), admin_receive_price)],
         AWAITING_FILE_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND & filters.User(ADMIN_ID), admin_receive_link)],
@@ -677,11 +667,8 @@ transfer_conv = ConversationHandler(
 )
 application.add_handler(transfer_conv)
 
-# معالجات الأوامر الرئيسية
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("admin", admin_panel, filters=filters.User(ADMIN_ID))) 
-
-# معالج الأزرار المضمنة
 application.add_handler(CallbackQueryHandler(button_handler))
 
 
@@ -695,9 +682,15 @@ async def set_webhook():
         return jsonify({"status": "error", "message": "WEBHOOK_URL not set in environment variables."}), 500
     
     await application.initialize() 
-    
     await application.bot.set_webhook(url=WEBHOOK_URL, secret_token=SECRET_TOKEN)
     return jsonify({"status": "ok", "message": f"تم ضبط خطاف الويب على: {WEBHOOK_URL}"}), 200
+
+def run_async(update):
+    """دالة مساعدة لتشغيل process_update في Thread منفصل."""
+    try:
+        asyncio.run(application.process_update(update))
+    except Exception as e:
+        logger.error(f"Error in processing thread: {e}")
 
 @app.route('/telegram', methods=['POST'])
 def telegram_webhook(): 
@@ -710,12 +703,14 @@ def telegram_webhook():
         data = request.get_json(force=True)
         update = Update.de_json(data, application.bot)
         
-        # الحل الحاسم: تشغيل عملية التحديث بشكل متزامن في حلقة أحداث مخصصة
-        asyncio.run(application.process_update(update))
+        # 🔑 الحل الجذري: إطلاق معالجة التحديث في Thread منفصل
+        thread = threading.Thread(target=run_async, args=(update,))
+        thread.start()
 
     except Exception as e:
-        logger.error(f"Error processing update: {e}")
+        logger.error(f"Error receiving update: {e}")
 
+    # يجب أن يعود Flask بـ 200 OK فوراً لمنع تيليجرام من إعادة إرسال التحديث
     return 'OK', 200
 
 
