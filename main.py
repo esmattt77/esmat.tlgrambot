@@ -3,10 +3,6 @@ import json
 import sqlite3
 import telegram
 import logging
-import asyncio 
-# تم إزالة import threading
-
-from flask import Flask, request, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -19,16 +15,20 @@ from telegram.ext import (
 )
 
 # ==============================================================================
-# 1. إعدادات البوت والبيئة
+# 1. إعدادات البوت والبيئة (تم حذف متغيرات Flask/Webhook)
 # ==============================================================================
 
+# **يجب تعيين هذه المتغيرات في البيئة (Render Environment Variables)**
 TOKEN = os.environ.get("BOT_TOKEN")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "0")) 
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
-PORT = int(os.environ.get("PORT", "5000")) 
-SECRET_TOKEN = os.environ.get("SECRET_TOKEN", "fallback_secret_must_be_changed") 
 REQUIRED_CHANNELS = os.environ.get("REQUIRED_CHANNELS", "").split(', ')
 SUPPORT_USERNAME = os.environ.get("SUPPORT_USERNAME", "support_user")
+
+if not TOKEN:
+    raise ValueError("❌ يجب تعيين BOT_TOKEN كمتغير بيئي.")
+if ADMIN_ID == 0:
+    logging.warning("⚠️ لم يتم تعيين ADMIN_ID. لن تعمل وظائف المشرف.")
+
 
 REFERRAL_BONUS = 0.5  
 DATABASE_NAME = 'bot_data.db'
@@ -43,8 +43,7 @@ AWAITING_TRANSFER_AMOUNT, AWAITING_TRANSFER_TARGET = range(3, 5)
 # ==============================================================================
 # 2. دوال قاعدة البيانات (Database Functions)
 # ==============================================================================
-
-# ... (دوال قاعدة البيانات كما هي)
+# (يتم الحفاظ عليها كما هي)
 def init_db():
     conn = sqlite3.connect(DATABASE_NAME)
     cursor = conn.cursor()
@@ -124,11 +123,11 @@ def add_file_to_db(name, price, file_link):
     finally:
         conn.close()
 
+
 # ==============================================================================
 # 3. دوال الواجهة (UI & Check Functions)
 # ==============================================================================
-
-# ... (دوال UI & Check Functions كما هي)
+# (يتم الحفاظ عليها كما هي)
 async def check_subscription(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
     for channel_username in REQUIRED_CHANNELS:
         channel = channel_username.strip()
@@ -176,7 +175,7 @@ async def get_main_menu_markup(user_id):
     ]
     return InlineKeyboardMarkup(keyboard)
 
-async def get_main_menu_text(user_id):
+async def get_main_menu_text(user_id, application):
     user = get_user(user_id)
     balance = user['balance']
     
@@ -192,19 +191,20 @@ async def get_main_menu_text(user_id):
     
 async def edit_to_main_menu(message: telegram.Message, context: ContextTypes.DEFAULT_TYPE, user_id: int):
     markup = await get_main_menu_markup(user_id)
-    text = await get_main_menu_text(user_id)
+    text = await get_main_menu_text(user_id, context.application)
     
     try:
         await message.edit_text(text, reply_markup=markup, parse_mode='HTML')
     except telegram.error.BadRequest:
         await message.reply_text(text, reply_markup=markup, parse_mode='HTML')
 
+
 # ==============================================================================
 # 4. معالجات المستخدم (User Handlers)
 # ==============================================================================
 
-# ... (دوال المستخدم كما هي)
 async def register_pending_referral(user_id, context: ContextTypes.DEFAULT_TYPE):
+    # ... (دالة تسجيل الإحالة)
     user = get_user(user_id)
     
     if 'pending_referrer' in context.user_data and user.get('referrer_id') == 0:
@@ -250,10 +250,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await register_pending_referral(user_id, context)
 
     markup = await get_main_menu_markup(user_id)
-    text = await get_main_menu_text(user_id)
+    text = await get_main_menu_text(user_id, context.application)
     
     await update.message.reply_text(text, reply_markup=markup, parse_mode='HTML')
 
+# ... (بقية دوال المستخدم كما هي)
 async def show_files_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
@@ -282,7 +283,7 @@ async def show_earn_ruble_menu(update: Update, context: ContextTypes.DEFAULT_TYP
     
     user_id = query.from_user.id
     
-    bot_username = (await context.bot.get_me()).username
+    bot_username = (await context.application.bot.get_me()).username
     referral_link = f"https://t.me/{bot_username}?start={user_id}"
     
     user = get_user(user_id)
@@ -449,7 +450,7 @@ async def cancel_transfer(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     return ConversationHandler.END
 
 # ==============================================================================
-# 6. معالجات المشرف (Admin Handlers)
+# 6. معالجات المشرف (Admin Handlers) - تم ضمان استقرارها
 # ==============================================================================
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -496,21 +497,19 @@ async def admin_prompt_add_file(update: Update, context: ContextTypes.DEFAULT_TY
     return AWAITING_FILE_NAME
 
 async def admin_receive_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """استقبال الاسم والوصف الكامل وطلب السعر. (استخدام send_message لزيادة الاستقرار)"""
+    """استقبال الاسم والوصف الكامل وطلب السعر."""
     
     context.user_data['new_file_name'] = update.message.text 
     
     try:
-        # استخدام context.bot.send_message لزيادة الاستقرار
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text="أدخل **سعر الملف** بالروبل (عدد عشري/صحيح):", 
+        # Long Polling يضمن استقرار هذه الردود التتابعية
+        await update.message.reply_text(
+            "أدخل **سعر الملف** بالروبل (عدد عشري/صحيح):", 
             parse_mode='HTML'
         )
     except Exception as e:
-        logger.error(f"Critical Network/Event Loop error in admin conversation (admin_receive_name): {e}")
-        # إذا فشل، نغلق المحادثة ونبلغ المشرف
-        await update.message.reply_text("❌ حدث خطأ في الشبكة (قد تكون مشكلة Event Loop). تم إلغاء العملية. يرجى المحاولة مرة أخرى باستخدام /admin.")
+        logger.error(f"Error in admin conversation: {e}")
+        await update.message.reply_text("❌ حدث خطأ داخلي. تم إلغاء العملية. يرجى المحاولة مرة أخرى باستخدام /admin.")
         context.user_data.clear()
         return ConversationHandler.END 
 
@@ -580,7 +579,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user_id = query.from_user.id
     message = query.message
     
-    # الرد الفوري لـ Telegram لتجنب Timeout وللمساعدة في حل خطأ Event Loop
     await query.answer()
 
     # 1. وظائف المشرف (تتم معالجتها فقط إذا كان المستخدم هو المشرف)
@@ -630,92 +628,43 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await confirm_buy_file(update, context, file_name)
 
 # ==============================================================================
-# 8. إعداد Flask و Webhook - الحل النهائي لـ Event Loop
+# 8. الإعداد والتشغيل (Long Polling)
 # ==============================================================================
 
-init_db()
+if __name__ == '__main__':
+    # تهيئة قاعدة البيانات
+    init_db()
 
-app = Flask(__name__)
-# ⚠️ يجب التأكد من تهيئة حلقة الأحداث قبل البدء
-try:
-    loop = asyncio.get_running_loop()
-except RuntimeError:
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+    # بناء التطبيق
+    application = Application.builder().token(TOKEN).build()
 
-# 💡 يتم بناء الـ Application هنا
-application = Application.builder().token(TOKEN).updater(None).build()
+    # إضافة الـ Handlers
+    admin_add_file_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(admin_prompt_add_file, pattern='^admin_add_file$')],
+        states={
+            AWAITING_FILE_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND & filters.User(ADMIN_ID), admin_receive_name)],
+            AWAITING_FILE_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND & filters.User(ADMIN_ID), admin_receive_price)],
+            AWAITING_FILE_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND & filters.User(ADMIN_ID), admin_receive_link)],
+        },
+        fallbacks=[CommandHandler('cancel', cancel_admin_action), CallbackQueryHandler(cancel_admin_action, pattern='^cancel_admin$')],
+    )
+    application.add_handler(admin_add_file_conv)
 
-# إضافة جميع الـ Handlers
-admin_add_file_conv = ConversationHandler(
-    entry_points=[CallbackQueryHandler(admin_prompt_add_file, pattern='^admin_add_file$')],
-    states={
-        AWAITING_FILE_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND & filters.User(ADMIN_ID), admin_receive_name)],
-        AWAITING_FILE_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND & filters.User(ADMIN_ID), admin_receive_price)],
-        AWAITING_FILE_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND & filters.User(ADMIN_ID), admin_receive_link)],
-    },
-    fallbacks=[CommandHandler('cancel', cancel_admin_action), CallbackQueryHandler(cancel_admin_action, pattern='^cancel_admin$')],
-)
-application.add_handler(admin_add_file_conv)
+    transfer_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(transfer_start, pattern='^transfer_ruble$')],
+        states={
+            AWAITING_TRANSFER_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_transfer_amount)],
+            AWAITING_TRANSFER_TARGET: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_transfer_target)],
+        },
+        fallbacks=[CommandHandler('cancel', cancel_transfer), CallbackQueryHandler(cancel_transfer, pattern='^cancel_transfer$')],
+    )
+    application.add_handler(transfer_conv)
 
-transfer_conv = ConversationHandler(
-    entry_points=[CallbackQueryHandler(transfer_start, pattern='^transfer_ruble$')],
-    states={
-        AWAITING_TRANSFER_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_transfer_amount)],
-        AWAITING_TRANSFER_TARGET: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_transfer_target)],
-    },
-    fallbacks=[CommandHandler('cancel', cancel_transfer), CallbackQueryHandler(cancel_transfer, pattern='^cancel_transfer$')],
-)
-application.add_handler(transfer_conv)
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("admin", admin_panel, filters=filters.User(ADMIN_ID))) 
+    application.add_handler(CallbackQueryHandler(button_handler))
 
-application.add_handler(CommandHandler("start", start))
-application.add_handler(CommandHandler("admin", admin_panel, filters=filters.User(ADMIN_ID))) 
-application.add_handler(CallbackQueryHandler(button_handler))
-
-
-@app.route('/', methods=['GET'])
-def index():
-    return "Telegram Bot Webhook is running!", 200
-
-@app.route('/set_webhook', methods=['GET', 'POST'])
-async def set_webhook():
-    if not WEBHOOK_URL:
-        return jsonify({"status": "error", "message": "WEBHOOK_URL not set in environment variables."}), 500
+    logger.info("🤖 البوت جاهز للتشغيل في وضع الاستطلاع الطويل (Long Polling)...")
     
-    await application.initialize() 
-    await application.bot.set_webhook(url=WEBHOOK_URL, secret_token=SECRET_TOKEN)
-    return jsonify({"status": "ok", "message": f"تم ضبط خطاف الويب على: {WEBHOOK_URL}"}), 200
-
-@app.route('/telegram', methods=['POST'])
-def telegram_webhook(): 
-    
-    if request.headers.get('X-Telegram-Bot-Api-Secret-Token') != SECRET_TOKEN:
-        logger.warning("Unauthorized access attempt to webhook.")
-        return 'Unauthorized', 403
-
-    try:
-        data = request.get_json(force=True)
-        update = Update.de_json(data, application.bot)
-        
-        # 💥 الحل النهائي: استخدام run_coroutine_threadsafe لجدولة المهمة على حلقة الأحداث الموجودة
-        # هذا يضمن عدم إغلاق الحلقة قبل إتمام المهمة
-        asyncio.run_coroutine_threadsafe(application.process_update(update), loop).result()
-
-    except Exception as e:
-        logger.error(f"Error processing update in webhook: {e}")
-
-    # يجب أن يعود Flask بـ 200 OK فوراً
-    return 'OK', 200
-
-
-if __name__ == "__main__":
-    if not TOKEN or ADMIN_ID == 0 or not WEBHOOK_URL:
-        logger.error("Configuration missing: Check BOT_TOKEN, ADMIN_ID, and WEBHOOK_URL environment variables.")
-    
-    # ⚠️ تهيئة حلقة الأحداث النهائية للتشغيل (نفس الحلقة التي تم استخدامها أعلاه)
-    asyncio.set_event_loop(loop)
-    
-    print(f"Flask App running on port {PORT}. Webhook URL: {WEBHOOK_URL}")
-    # تشغيل Flask بشكل طبيعي (سيتم التعامل مع Asyncio بواسطة run_coroutine_threadsafe)
-    loop.run_until_complete(application.initialize())
-    app.run(host='0.0.0.0', port=PORT)
+    # 💥 تشغيل البوت في وضع الاستطلاع الطويل (الحل الجذري)
+    application.run_polling(poll_interval=1.0)
