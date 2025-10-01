@@ -15,10 +15,9 @@ from telegram.ext import (
 )
 
 # ==============================================================================
-# 1. إعدادات البوت والبيئة (تم حذف متغيرات Flask/Webhook)
+# 1. إعدادات البوت والبيئة
 # ==============================================================================
 
-# **يجب تعيين هذه المتغيرات في البيئة (Render Environment Variables)**
 TOKEN = os.environ.get("BOT_TOKEN")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "0")) 
 REQUIRED_CHANNELS = os.environ.get("REQUIRED_CHANNELS", "").split(', ')
@@ -38,6 +37,7 @@ logger = logging.getLogger(__name__)
 
 # حالات المحادثة
 AWAITING_FILE_NAME, AWAITING_FILE_PRICE, AWAITING_FILE_LINK = range(3)
+# يجب أن تكون حالات التحويل أرقاماً متتابعة بعد حالات الملف
 AWAITING_TRANSFER_AMOUNT, AWAITING_TRANSFER_TARGET = range(3, 5)
 
 # ==============================================================================
@@ -196,6 +196,7 @@ async def edit_to_main_menu(message: telegram.Message, context: ContextTypes.DEF
     try:
         await message.edit_text(text, reply_markup=markup, parse_mode='HTML')
     except telegram.error.BadRequest:
+        # إذا لم يتمكن من التعديل (مثلاً، لو كانت الرسالة قديمة أو تم تعديلها)، أرسل رسالة جديدة
         await message.reply_text(text, reply_markup=markup, parse_mode='HTML')
 
 
@@ -204,7 +205,6 @@ async def edit_to_main_menu(message: telegram.Message, context: ContextTypes.DEF
 # ==============================================================================
 
 async def register_pending_referral(user_id, context: ContextTypes.DEFAULT_TYPE):
-    # ... (دالة تسجيل الإحالة)
     user = get_user(user_id)
     
     if 'pending_referrer' in context.user_data and user.get('referrer_id') == 0:
@@ -254,7 +254,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     
     await update.message.reply_text(text, reply_markup=markup, parse_mode='HTML')
 
-# ... (بقية دوال المستخدم كما هي)
 async def show_files_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
@@ -263,9 +262,11 @@ async def show_files_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     file_keyboard = []
     for file_name, price, _ in available_files:
-        short_name = file_name.splitlines()[0]
-        button_text = f"ملف: {short_name} ({price:.2f} روبل)"
-        file_keyboard.append([InlineKeyboardButton(button_text, callback_data=f'buy_file_{short_name.replace(" ", "_")}')]) 
+        # نستخدم اسم الملف ككل، ونستبدل المسافات بشرطة سفلية للـ CallbackData
+        # ثم نستخدم splitlines()[0] لعرض السطر الأول فقط
+        short_name_display = file_name.splitlines()[0]
+        button_text = f"ملف: {short_name_display} ({price:.2f} روبل)"
+        file_keyboard.append([InlineKeyboardButton(button_text, callback_data=f'buy_file_{file_name.replace(" ", "_")}')]) 
 
     file_keyboard.append([InlineKeyboardButton("↩️ العودة للقائمة الرئيسية", callback_data='check_and_main_menu')])
 
@@ -304,15 +305,18 @@ async def show_earn_ruble_menu(update: Update, context: ContextTypes.DEFAULT_TYP
     await query.edit_message_text(message_text, reply_markup=reply_markup, parse_mode='HTML')
 
 
-async def prompt_buy_file(update: Update, context: ContextTypes.DEFAULT_TYPE, file_name: str) -> None:
+async def prompt_buy_file(update: Update, context: ContextTypes.DEFAULT_TYPE, file_name_encoded: str) -> None:
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
     user = get_user(user_id)
     
+    file_name = file_name_encoded.replace('_', ' ')
+    
     conn = sqlite3.connect(DATABASE_NAME)
     cursor = conn.cursor()
-    cursor.execute("SELECT name, price, file_link FROM files WHERE name LIKE ? LIMIT 1", (file_name.replace('_', ' ') + '%',))
+    # البحث عن الملف بالاسم الكامل
+    cursor.execute("SELECT name, price, file_link FROM files WHERE name = ? LIMIT 1", (file_name,))
     details_full = cursor.fetchone()
     conn.close()
     
@@ -331,8 +335,9 @@ async def prompt_buy_file(update: Update, context: ContextTypes.DEFAULT_TYPE, fi
         )
         return
 
+    # نستخدم الاسم المشفر مرة أخرى لـ confirm_buy
     keyboard = [
-        [InlineKeyboardButton(f"✅ تأكيد الشراء ({price:.2f} روبل)", callback_data=f'confirm_buy_{short_name.replace(" ", "_")}')],
+        [InlineKeyboardButton(f"✅ تأكيد الشراء ({price:.2f} روبل)", callback_data=f'confirm_buy_{file_name_encoded}')],
         [InlineKeyboardButton("❌ إلغاء", callback_data='buy_file')]
     ]
     await query.edit_message_text(
@@ -341,15 +346,17 @@ async def prompt_buy_file(update: Update, context: ContextTypes.DEFAULT_TYPE, fi
         parse_mode='HTML'
     )
 
-async def confirm_buy_file(update: Update, context: ContextTypes.DEFAULT_TYPE, file_name: str) -> None:
+async def confirm_buy_file(update: Update, context: ContextTypes.DEFAULT_TYPE, file_name_encoded: str) -> None:
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
     user = get_user(user_id)
+
+    file_name = file_name_encoded.replace('_', ' ')
     
     conn = sqlite3.connect(DATABASE_NAME)
     cursor = conn.cursor()
-    cursor.execute("SELECT name, price, file_link FROM files WHERE name LIKE ? LIMIT 1", (file_name.replace('_', ' ') + '%',))
+    cursor.execute("SELECT name, price, file_link FROM files WHERE name = ? LIMIT 1", (file_name,))
     details_full = cursor.fetchone()
     conn.close()
         
@@ -378,6 +385,8 @@ async def confirm_buy_file(update: Update, context: ContextTypes.DEFAULT_TYPE, f
         parse_mode='HTML'
     )
     
+# ... (دوال التحويل كما هي)
+
 async def transfer_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
@@ -449,8 +458,9 @@ async def cancel_transfer(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await query.edit_message_text("✅ تم إلغاء عملية التحويل.", reply_markup=await get_main_menu_markup(query.from_user.id))
     return ConversationHandler.END
 
+
 # ==============================================================================
-# 6. معالجات المشرف (Admin Handlers) - تم ضمان استقرارها
+# 6. معالجات المشرف (Admin Handlers)
 # ==============================================================================
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -502,7 +512,6 @@ async def admin_receive_name(update: Update, context: ContextTypes.DEFAULT_TYPE)
     context.user_data['new_file_name'] = update.message.text 
     
     try:
-        # Long Polling يضمن استقرار هذه الردود التتابعية
         await update.message.reply_text(
             "أدخل **سعر الملف** بالروبل (عدد عشري/صحيح):", 
             parse_mode='HTML'
@@ -573,25 +582,14 @@ async def admin_close_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # 7. معالج الأزرار الموحد (Callback Query Handler)
 # ==============================================================================
 
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def main_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     data = query.data
     user_id = query.from_user.id
     message = query.message
     
+    # الرد الفوري للـ Query
     await query.answer()
-
-    # 1. وظائف المشرف (تتم معالجتها فقط إذا كان المستخدم هو المشرف)
-    if user_id == ADMIN_ID:
-        if data == 'show_admin_panel':
-            await admin_panel(update, context)
-            return
-        elif data == 'admin_close_panel':
-            await admin_close_panel(update, context)
-            return
-        elif data == 'admin_list_files' or data == 'admin_stats' or data == 'admin_edit_balance' or data == 'admin_broadcast':
-            await query.answer("هذه الوظيفة الإدارية لم تُنفذ بعد.", show_alert=True)
-            return
     
     # 2. وظائف القائمة الرئيسية للمستخدمين
     if data == 'check_and_main_menu' or data == 'check_sub':
@@ -608,6 +606,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         
     elif data == 'balance_info':
         user = get_user(user_id)
+        # تم تغيير show_alert إلى True لعرض تنبيه بسيط، إذا كنت لا تريد تنبيهاً أزل show_alert=True
         await query.answer(f"رصيدك الحالي هو: {user['balance']:.2f} روبل", show_alert=True)
         
     elif data == 'user_info':
@@ -617,15 +616,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         
     elif data in ['buy_points', 'buy_hosting', 'free_ruble', 'proof_channel']:
         await query.answer("لم يتم تنفيذ هذه الوظيفة بعد. نعتذر للإزعاج.", show_alert=True)
-
+        
+async def buy_file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    data = query.data
+    
     # 3. شراء الملفات
-    elif data.startswith('buy_file_'):
-        file_name = data.replace('buy_file_', '').replace('_', ' ')
-        await prompt_buy_file(update, context, file_name)
+    if data.startswith('buy_file_'):
+        file_name_encoded = data.replace('buy_file_', '')
+        await prompt_buy_file(update, context, file_name_encoded)
         
     elif data.startswith('confirm_buy_'):
-        file_name = data.replace('confirm_buy_', '').replace('_', ' ')
-        await confirm_buy_file(update, context, file_name)
+        file_name_encoded = data.replace('confirm_buy_', '')
+        await confirm_buy_file(update, context, file_name_encoded)
 
 # ==============================================================================
 # 8. الإعداد والتشغيل (Long Polling)
@@ -638,7 +641,7 @@ if __name__ == '__main__':
     # بناء التطبيق
     application = Application.builder().token(TOKEN).build()
 
-    # إضافة الـ Handlers
+    # 1. Conversation Handlers (المشرف والتحويل) - تعمل بشكل جيد
     admin_add_file_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(admin_prompt_add_file, pattern='^admin_add_file$')],
         states={
@@ -660,11 +663,27 @@ if __name__ == '__main__':
     )
     application.add_handler(transfer_conv)
 
+    # 2. Command Handlers
     application.add_handler(CommandHandler("start", start))
+    # تم تغيير نمط زر المشرف للعودة للوحة المشرف
     application.add_handler(CommandHandler("admin", admin_panel, filters=filters.User(ADMIN_ID))) 
-    application.add_handler(CallbackQueryHandler(button_handler))
+    
+    # 3. Callback Query Handlers (الأزرار)
+    
+    # معالج خاص لأزرار شراء الملفات وتأكيد الشراء (تعبيرات نمطية تبدأ بـ buy_file_ أو confirm_buy_)
+    application.add_handler(CallbackQueryHandler(buy_file_handler, pattern='^(buy_file_|confirm_buy_).*$'))
+
+    # معالج لأزرار المشرف غير التفاعلية (مثل القائمة)
+    if ADMIN_ID != 0:
+        application.add_handler(CallbackQueryHandler(admin_panel, pattern='^show_admin_panel$', filters=filters.User(ADMIN_ID)))
+        application.add_handler(CallbackQueryHandler(admin_close_panel, pattern='^admin_close_panel$', filters=filters.User(ADMIN_ID)))
+        # أزرار المشرف غير المنفذة
+        application.add_handler(CallbackQueryHandler(main_callback_handler, pattern='^(admin_list_files|admin_edit_balance|admin_stats|admin_broadcast)$', filters=filters.User(ADMIN_ID)))
+
+    # المعالج العام لبقية أزرار القائمة الرئيسية (يجب أن يكون الأخير)
+    application.add_handler(CallbackQueryHandler(main_callback_handler))
 
     logger.info("🤖 البوت جاهز للتشغيل في وضع الاستطلاع الطويل (Long Polling)...")
     
-    # 💥 تشغيل البوت في وضع الاستطلاع الطويل (الحل الجذري)
+    # تشغيل البوت في وضع الاستطلاع الطويل (الحل الجذري)
     application.run_polling(poll_interval=1.0)
