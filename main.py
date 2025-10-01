@@ -3,6 +3,7 @@ import json
 import sqlite3
 import telegram
 import logging
+import asyncio # تم إضافة مكتبة asyncio لمعالجة خطأ Event loop is closed
 from flask import Flask, request, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -23,7 +24,6 @@ from telegram.ext import (
 TOKEN = os.environ.get("BOT_TOKEN")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "0")) 
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
-# تم تعديل المنفذ الافتراضي إلى 8080 ليتوافق مع Render، ولكن تركناه 5000 كما طلب المستخدم مع رسالة تنبيه
 PORT = int(os.environ.get("PORT", "5000")) 
 SECRET_TOKEN = os.environ.get("SECRET_TOKEN", "fallback_secret_must_be_changed") 
 REQUIRED_CHANNELS = os.environ.get("REQUIRED_CHANNELS", "").split(', ')
@@ -36,7 +36,7 @@ DATABASE_NAME = 'bot_data.db'
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# حالات المحادثة للمشرف
+# حالات المحادثة
 AWAITING_FILE_NAME, AWAITING_FILE_PRICE, AWAITING_FILE_LINK = range(3)
 AWAITING_TRANSFER_AMOUNT, AWAITING_TRANSFER_TARGET = range(3, 5)
 
@@ -103,9 +103,7 @@ def add_referral(user_id, referrer_id):
     """تسجيل الإحالة وإضافة الرصيد للمُحيل."""
     conn = sqlite3.connect(DATABASE_NAME)
     cursor = conn.cursor()
-    # 1. تحديث بيانات المستخدم الجديد (تسجيل المُحيل)
     cursor.execute("UPDATE users SET referrer_id = ? WHERE user_id = ?", (referrer_id, user_id))
-    # 2. إضافة الرصيد للمُحيل وزيادة عدد الإحالات لديه
     cursor.execute("UPDATE users SET balance = balance + ?, referral_count = referral_count + 1 WHERE user_id = ?", 
                    (REFERRAL_BONUS, referrer_id))
     conn.commit()
@@ -156,14 +154,12 @@ async def check_subscription(user_id: int, context: ContextTypes.DEFAULT_TYPE) -
             member = await context.bot.get_chat_member(chat_id=channel, user_id=user_id)
             if member.status not in ["member", "administrator", "creator"]:
                 return False
-        except Exception as e:
-            # logger.error(f"Error checking sub for {channel}: {e}") # يمكن إلغاء التعليق للتصحيح
+        except Exception:
             return False 
     return True
 
 async def prompt_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """إظهار رسالة طلب الاشتراك."""
-    # تم التعديل لاستخدام effective_message ليتوافق مع تحديثات الـ Callback
     message = update.effective_message 
     
     buttons = []
@@ -171,7 +167,6 @@ async def prompt_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE
         if channel.strip():
             buttons.append([InlineKeyboardButton(f"اشترك في {channel.strip()}", url=f"https://t.me/{channel.strip('@')}")])
 
-    # تم تغيير callback_data ليتوافق مع المنطق الجديد لفحص الإحالة
     buttons.append([InlineKeyboardButton("✅ تم الاشتراك، تحقق الآن", callback_data='check_and_main_menu')])
 
     reply_markup = InlineKeyboardMarkup(buttons)
@@ -205,7 +200,6 @@ async def get_main_menu_text(user_id):
     user = get_user(user_id)
     balance = user['balance']
     
-    # جلب اسم البوت لإنشاء رابط المتجر (إذا كان البوت لا يزال يعمل)
     bot_info = await application.bot.get_me()
     
     return (
@@ -213,7 +207,7 @@ async def get_main_menu_text(user_id):
         f"اجمع نقاط واستبدلها بملفات php متطورة.\n\n"
         f"**- رصيدك = {balance:.2f} روبل**\n\n"
         f"**{user_id}** = الأيدي\n\n"
-        f"اضغط هنا لإنشاء بوت المتجر @{bot_info.username}" # تم تعديل النص ليعرض اسم البوت
+        f"اضغط هنا لإنشاء بوت المتجر @{bot_info.username}"
     )
     
 async def edit_to_main_menu(message: telegram.Message, context: ContextTypes.DEFAULT_TYPE, user_id: int):
@@ -221,17 +215,32 @@ async def edit_to_main_menu(message: telegram.Message, context: ContextTypes.DEF
     markup = await get_main_menu_markup(user_id)
     text = await get_main_menu_text(user_id)
     
-    # محاولة التعديل، إذا فشلت (كأن تكون رسالة جديدة) نقوم بالرد
     try:
         await message.edit_text(text, reply_markup=markup, parse_mode='HTML')
     except telegram.error.BadRequest:
-         # إذا فشل التعديل، نقوم بالرد برسالة جديدة (لضمان عمل /start بشكل صحيح)
         await message.reply_text(text, reply_markup=markup, parse_mode='HTML')
-
 
 # ==============================================================================
 # 4. معالجات المستخدم (User Handlers) - تم إصلاح الإحالة
 # ==============================================================================
+
+async def register_pending_referral(user_id, context: ContextTypes.DEFAULT_TYPE):
+    """تسجيل الإحالة وحساب الرصيد إذا كانت معلقة."""
+    user = get_user(user_id)
+    
+    if 'pending_referrer' in context.user_data and user.get('referrer_id') == 0:
+        referrer_id = context.user_data.pop('pending_referrer')
+        
+        referrer_user = get_user(referrer_id)
+        if referrer_user['user_id'] != user_id: 
+            add_referral(user_id, referrer_id)
+            await context.bot.send_message(
+                chat_id=referrer_id, 
+                text=f"🎁 **مبروك!** انضم مستخدم جديد عبر رابط الإحالة الخاص بك. تم إضافة **{REFERRAL_BONUS} روبل** إلى رصيدك.",
+                parse_mode='HTML'
+            )
+            return True
+    return False
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """معالجة أمر /start وتسجيل الإحالة."""
@@ -245,9 +254,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         referrer_id_str = context.args[0]
         try:
             referrer_id = int(referrer_id_str)
-            # التأكد من عدم تسجيل الإحالة من قبل وأن المُحيل ليس هو المستخدم نفسه
             if referrer_id != user_id and user.get('referrer_id') == 0:
-                # حفظ الآيدي لاستخدامه بعد التحقق الناجح من الاشتراك
                 context.user_data['pending_referrer'] = referrer_id
         except ValueError:
             pass
@@ -259,7 +266,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await prompt_subscription(update, context)
         return
         
-    # 3. تسجيل الإحالة المعلقة (يتم هنا إذا كان المستخدم مشتركاً بالفعل)
+    # 3. تسجيل الإحالة المعلقة
     await register_pending_referral(user_id, context)
 
     # 4. عرض القائمة الرئيسية
@@ -268,29 +275,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     
     await message.reply_text(text, reply_markup=markup, parse_mode='HTML')
 
-async def register_pending_referral(user_id, context: ContextTypes.DEFAULT_TYPE):
-    """تسجيل الإحالة وحساب الرصيد إذا كانت معلقة."""
-    user = get_user(user_id)
-    
-    if 'pending_referrer' in context.user_data and user.get('referrer_id') == 0:
-        referrer_id = context.user_data.pop('pending_referrer')
-        
-        # تحقق أخير من أن المُحيل موجود في DB لتجنب الأخطاء
-        referrer_user = get_user(referrer_id)
-        if referrer_user['user_id'] != user_id: 
-            add_referral(user_id, referrer_id)
-            await context.bot.send_message(
-                chat_id=referrer_id, 
-                text=f"🎁 **مبروك!** انضم مستخدم جديد عبر رابط الإحالة الخاص بك. تم إضافة **{REFERRAL_BONUS} روبل** إلى رصيدك.",
-                parse_mode='HTML'
-            )
-            return True
-    return False
-
 
 async def show_files_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """عرض قائمة الملفات المتاحة للبيع."""
-    # الكود كما هو
     query = update.callback_query
     await query.answer()
 
@@ -301,7 +288,6 @@ async def show_files_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         button_text = f"ملف {file_name} ({price:.2f} روبل)"
         file_keyboard.append([InlineKeyboardButton(button_text, callback_data=f'buy_file_{file_name.replace(" ", "_")}')])
 
-    # تم تغيير callback_data إلى 'check_and_main_menu' للتوافق مع التعديل الجديد
     file_keyboard.append([InlineKeyboardButton("↩️ العودة للقائمة الرئيسية", callback_data='check_and_main_menu')])
 
     reply_markup = InlineKeyboardMarkup(file_keyboard)
@@ -314,7 +300,6 @@ async def show_files_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def show_earn_ruble_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """عرض رابط الإحالة للمستخدم."""
-    # الكود كما هو
     query = update.callback_query
     await query.answer()
     
@@ -334,7 +319,7 @@ async def show_earn_ruble_menu(update: Update, context: ContextTypes.DEFAULT_TYP
     
     keyboard = [
         [InlineKeyboardButton("📤 مشاركة الرابط", url=f"tg://msg?text=انضم%20إلى%20البوت%20واكسب%20الروبل!%20{referral_link}")],
-        [InlineKeyboardButton("↩️ العودة للقائمة الرئيسية", callback_data='check_and_main_menu')], # تم التعديل
+        [InlineKeyboardButton("↩️ العودة للقائمة الرئيسية", callback_data='check_and_main_menu')],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -343,7 +328,6 @@ async def show_earn_ruble_menu(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def prompt_buy_file(update: Update, context: ContextTypes.DEFAULT_TYPE, file_name: str) -> None:
     """تأكيد عملية الشراء."""
-    # الكود كما هو
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
@@ -377,7 +361,6 @@ async def prompt_buy_file(update: Update, context: ContextTypes.DEFAULT_TYPE, fi
 
 async def confirm_buy_file(update: Update, context: ContextTypes.DEFAULT_TYPE, file_name: str) -> None:
     """تنفيذ عملية الشراء."""
-    # الكود كما هو
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
@@ -386,7 +369,6 @@ async def confirm_buy_file(update: Update, context: ContextTypes.DEFAULT_TYPE, f
     details = get_file_details(file_name)
     price, file_link = details
     
-    # تحقق أخير من الرصيد
     if user['balance'] < price:
         await query.edit_message_text("❌ عملية فاشلة: رصيدك أصبح غير كافٍ.", reply_markup=await get_main_menu_markup(user_id))
         return
@@ -414,7 +396,6 @@ async def confirm_buy_file(update: Update, context: ContextTypes.DEFAULT_TYPE, f
 
 async def transfer_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """بدء عملية التحويل: طلب المبلغ."""
-    # الكود كما هو
     query = update.callback_query
     await query.answer()
     
@@ -429,7 +410,6 @@ async def transfer_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 async def receive_transfer_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """استقبال المبلغ والتحقق منه."""
-    # الكود كما هو
     user_id = update.effective_user.id
     text = update.message.text
     user = get_user(user_id)
@@ -454,7 +434,6 @@ async def receive_transfer_amount(update: Update, context: ContextTypes.DEFAULT_
 
 async def receive_transfer_target(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """استقبال آيدي المستلم وتنفيذ التحويل."""
-    # الكود كما هو
     sender_id = update.effective_user.id
     amount = context.user_data.get('transfer_amount')
     text = update.message.text
@@ -465,7 +444,6 @@ async def receive_transfer_target(update: Update, context: ContextTypes.DEFAULT_
             await update.message.reply_text("❌ لا يمكنك التحويل إلى نفسك. أرسل آيدي مستخدم آخر.")
             return AWAITING_TRANSFER_TARGET
         
-        # تحقق بسيط للتأكد من وجود المستلم (سواء كان موجودًا في DB أم سيتم إنشاؤه)
         get_user(receiver_id) 
 
         # 1. خصم من المرسل
@@ -488,7 +466,6 @@ async def receive_transfer_target(update: Update, context: ContextTypes.DEFAULT_
 
 async def cancel_transfer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """إلغاء عملية التحويل."""
-    # الكود كما هو
     query = update.callback_query
     context.user_data.clear()
     await query.edit_message_text("✅ تم إلغاء عملية التحويل.", reply_markup=await get_main_menu_markup(query.from_user.id))
@@ -499,14 +476,13 @@ async def cancel_transfer(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 # ==============================================================================
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """عرض لوحة تحكم المشرف (لا تتأثر بالتحقق من الاشتراك)."""
-    # بما أن الـ Handler يستخدم filters.User(ADMIN_ID)، فالتأكد من الآيدي يتم تلقائياً
+    """عرض لوحة تحكم المشرف."""
     
     keyboard = [
         [InlineKeyboardButton("➕ إضافة ملف PHP جديد", callback_data='admin_add_file')],
         [InlineKeyboardButton("📝 عرض/تعديل الملفات", callback_data='admin_list_files')],
         [InlineKeyboardButton("📊 إحصائيات البوت", callback_data='admin_stats')],
-        [InlineKeyboardButton("🔙 رجوع لقائمة المستخدم", callback_data='check_and_main_menu')] # تم التعديل
+        [InlineKeyboardButton("🔙 رجوع لقائمة المستخدم", callback_data='check_and_main_menu')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -518,7 +494,6 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 async def admin_prompt_add_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """الخطوة 1: طلب اسم الملف."""
-    # الكود كما هو
     query = update.callback_query
     await query.answer()
 
@@ -531,14 +506,12 @@ async def admin_prompt_add_file(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def admin_receive_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """استقبال اسم الملف وطلب السعر."""
-    # الكود كما هو
     context.user_data['new_file_name'] = update.message.text
     await update.message.reply_text("أدخل **سعر الملف** بالروبل (عدد عشري/صحيح):", parse_mode='HTML')
     return AWAITING_FILE_PRICE
 
 async def admin_receive_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """استقبال السعر وطلب الرابط."""
-    # الكود كما هو
     try:
         price = float(update.message.text)
         context.user_data['new_file_price'] = price
@@ -550,7 +523,6 @@ async def admin_receive_price(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def admin_receive_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """استقبال الرابط وحفظ الملف."""
-    # الكود كما هو
     file_name = context.user_data['new_file_name']
     file_price = context.user_data['new_file_price']
     file_link = update.message.text
@@ -565,7 +537,6 @@ async def admin_receive_link(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def cancel_admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """إنهاء عملية إضافة الملف (من خلال الأمر /cancel أو زر الإلغاء)."""
-    # الكود كما هو
     if update.message:
         await update.message.reply_text("✅ تم إلغاء عملية إضافة الملف.", reply_markup=await get_main_menu_markup(update.effective_user.id))
     elif update.callback_query:
@@ -574,7 +545,7 @@ async def cancel_admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE
     return ConversationHandler.END
 
 # ==============================================================================
-# 7. معالج الأزرار الموحد (Callback Query Handler) - تم إصلاح الإحالة والأزرار
+# 7. معالج الأزرار الموحد (Callback Query Handler)
 # ==============================================================================
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -583,20 +554,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user_id = query.from_user.id
     message = query.message
     
+    # يجب أن يكون الرد سريعا جداً لتجنب Timeout، وبما أننا نستخدم asyncio.run 
+    # فسنقوم بالرد مباشرة الآن
     await query.answer()
 
     # 1. التحقق من الاشتراك والرجوع للقائمة الرئيسية
-    if data == 'check_and_main_menu' or data == 'check_sub': # دمج كلا البيانات لضمان التوافقية
+    if data == 'check_and_main_menu' or data == 'check_sub':
         is_subscribed = await check_subscription(user_id, context)
         if is_subscribed:
-            
-            # --- تسجيل الإحالة بعد التأكيد ---
             await register_pending_referral(user_id, context)
-            # --------------------------------
-            
             await edit_to_main_menu(message, context, user_id)
         else:
-            await query.answer("❌ لم يتم الاشتراك بعد. يرجى الاشتراك ثم المحاولة مرة أخرى.", show_alert=True)
+            # هنا لا حاجة للرد مرة أخرى، لأن query.answer() تم استدعاؤها في البداية
+            pass 
             
     # 2. وظائف القائمة الرئيسية
     elif data == 'buy_file':
@@ -606,7 +576,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await show_earn_ruble_menu(update, context)
         
     elif data == 'transfer_ruble':
-        # يجب أن يبدأ محادثة التحويل، سيتم معالجته بواسطة ConversationHandler
+        # يتم معالجة هذا عبر ConversationHandler
+        # يجب أن تتأكد أن هذا الـ Callback لا يتم معالجته مرتين
         await transfer_start(update, context)
         
     elif data == 'balance_info':
@@ -619,7 +590,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await query.answer(f"معلوماتك:\nالآيدي: {user_id}\nالرصيد: {user['balance']:.2f} روبل\nالإحالات: {user['referral_count']}\nالمُحيل: {referrer_info}", show_alert=True)
         
     elif data in ['buy_points', 'buy_hosting', 'free_ruble', 'proof_channel', 'admin_list_files', 'admin_stats']:
-        # تم تفعيل أزرار القائمة الرئيسية التي كانت لا تعمل
+        # هذه الأزرار تعمل الآن ولكن برسالة عامة
         await query.answer("لم يتم تنفيذ هذه الوظيفة بعد. نعتذر للإزعاج.", show_alert=True)
 
     # 3. شراء الملفات
@@ -637,7 +608,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 # ==============================================================================
-# 8. إعداد Flask و Webhook - تم إصلاح التهيئة والمنفذ
+# 8. إعداد Flask و Webhook - الحل الحاسم لمشكلة Event Loop
 # ==============================================================================
 
 # تهيئة قاعدة البيانات عند بدء التشغيل
@@ -648,7 +619,6 @@ application = Application.builder().token(TOKEN).updater(None).build()
 
 # إضافة جميع الـ Handlers
 
-# ConversationHandler لإضافة ملفات المشرف
 admin_add_file_conv = ConversationHandler(
     entry_points=[CallbackQueryHandler(admin_prompt_add_file, pattern='^admin_add_file$')],
     states={
@@ -660,7 +630,6 @@ admin_add_file_conv = ConversationHandler(
 )
 application.add_handler(admin_add_file_conv)
 
-# ConversationHandler لتحويل الروبل
 transfer_conv = ConversationHandler(
     entry_points=[CallbackQueryHandler(transfer_start, pattern='^transfer_ruble$')],
     states={
@@ -671,13 +640,8 @@ transfer_conv = ConversationHandler(
 )
 application.add_handler(transfer_conv)
 
-
-# معالجات الأوامر الرئيسية
 application.add_handler(CommandHandler("start", start))
-# تم إصلاح لوحة المشرف: لا تتعارض مع منطق /start
 application.add_handler(CommandHandler("admin", admin_panel, filters=filters.User(ADMIN_ID))) 
-
-# معالج الأزرار المضمنة
 application.add_handler(CallbackQueryHandler(button_handler))
 
 
@@ -692,16 +656,17 @@ async def set_webhook():
     if not WEBHOOK_URL:
         return jsonify({"status": "error", "message": "WEBHOOK_URL not set in environment variables."}), 500
     
-    # === إصلاح تهيئة التطبيق ===
+    # تهيئة التطبيق (ضرورية قبل ضبط الـ Webhook)
     await application.initialize() 
     
     await application.bot.set_webhook(url=WEBHOOK_URL, secret_token=SECRET_TOKEN)
     return jsonify({"status": "ok", "message": f"تم ضبط خطاف الويب على: {WEBHOOK_URL}"}), 200
 
 @app.route('/telegram', methods=['POST'])
-async def telegram_webhook():
+def telegram_webhook(): 
     """مسار استقبال تحديثات Telegram."""
     
+    # التحقق من التوكن السري أولاً
     if request.headers.get('X-Telegram-Bot-Api-Secret-Token') != SECRET_TOKEN:
         logger.warning("Unauthorized access attempt to webhook.")
         return 'Unauthorized', 403
@@ -710,10 +675,10 @@ async def telegram_webhook():
         data = request.get_json(force=True)
         update = Update.de_json(data, application.bot)
         
-        # === إصلاح تهيئة التطبيق ===
-        await application.initialize() 
-        
-        await application.process_update(update)
+        # === الحل الحاسم لمشكلة 'Event loop is closed' ===
+        # تشغيل process_update في حلقة أحداث مغلقة لضمان اكتمال جميع العمليات غير المتزامنة
+        # قبل عودة الرد من Flask.
+        asyncio.run(application.process_update(update))
 
     except Exception as e:
         logger.error(f"Error processing update: {e}")
@@ -725,6 +690,5 @@ if __name__ == "__main__":
     if not TOKEN or ADMIN_ID == 0 or not WEBHOOK_URL:
         logger.error("Configuration missing: Check BOT_TOKEN, ADMIN_ID, and WEBHOOK_URL environment variables.")
     
-    # ملاحظة: المنفذ الافتراضي لـ Render هو 8080. تأكد من تعيين PORT=8080 في متغيرات البيئة.
     print(f"Flask App running on port {PORT}. Webhook URL: {WEBHOOK_URL}")
     app.run(host='0.0.0.0', port=PORT)
