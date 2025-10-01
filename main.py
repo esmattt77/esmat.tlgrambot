@@ -944,8 +944,11 @@ if __name__ == '__main__':
     # معالج خاص لأزرار شراء الملفات وتأكيد الشراء
     application.add_handler(CallbackQueryHandler(buy_file_handler, pattern='^(buy_file_|confirm_buy_).*$'))
 
-    # المعالج الخاص بمسح الملفات
-    application.add_handler(CallbackQueryHandler(admin_delete_file_handler, pattern='^admin_delete_file_.*$', filters=filters.User(ADMIN_ID)))
+    # ...
+    # المعالج الخاص بمسح الملفات (تم حذف 'filters=' لحل مشكلة التوافق)
+    application.add_handler(CallbackQueryHandler(admin_delete_file_handler, pattern='^admin_delete_file_.*$'))
+# ...
+    
     
     # معالج لأزرار المشرف غير التفاعلية (تم حذف add_filters لحل مشكلة التوافق)
     if ADMIN_ID != 0:
