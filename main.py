@@ -18,6 +18,7 @@ from telegram.ext import (
 # 1. إعدادات البوت والبيئة
 # ==============================================================================
 
+# يرجى التأكد من تعيين هذه المتغيرات في بيئة التشغيل (Render/Heroku)
 TOKEN = os.environ.get("BOT_TOKEN")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "0")) 
 REQUIRED_CHANNELS = [c.strip() for c in os.environ.get("REQUIRED_CHANNELS", "").split(',') if c.strip()]
@@ -38,7 +39,6 @@ logger = logging.getLogger(__name__)
 # حالات المحادثة
 AWAITING_FILE_NAME, AWAITING_FILE_PRICE, AWAITING_FILE_LINK = range(3)
 AWAITING_TRANSFER_AMOUNT, AWAITING_TRANSFER_TARGET = range(3, 5)
-# حالات المشرف لإدارة المستخدمين
 AWAITING_USER_ID, AWAITING_NEW_BALANCE, AWAITING_BALANCE_CHANGE = range(5, 8) 
 AWAITING_BROADCAST_MESSAGE = 8
 
@@ -83,7 +83,6 @@ def get_user(user_id):
         conn.close()
         return {'user_id': user_data[0], 'balance': user_data[1], 'referral_count': user_data[2], 'referrer_id': user_data[3]}
     else:
-        # إضافة المستخدم إذا لم يكن موجوداً
         cursor.execute("INSERT INTO users (user_id) VALUES (?)", (user_id,))
         conn.commit()
         conn.close()
@@ -103,6 +102,14 @@ def set_user_balance(user_id, new_balance):
     conn.commit()
     conn.close()
     
+def get_all_user_ids():
+    conn = sqlite3.connect(DATABASE_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id FROM users")
+    users = [row[0] for row in cursor.fetchall()]
+    conn.close()
+    return users
+
 def add_referral(user_id, referrer_id):
     conn = sqlite3.connect(DATABASE_NAME)
     cursor = conn.cursor()
@@ -133,33 +140,55 @@ def add_file_to_db(name, price, file_link):
     finally:
         conn.close()
 
+def get_bot_stats():
+    conn = sqlite3.connect(DATABASE_NAME)
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT COUNT(user_id), SUM(balance), SUM(referral_count) FROM users")
+    users_count, total_balance, total_referrals = cursor.fetchone()
+    
+    cursor.execute("SELECT COUNT(id) FROM files")
+    files_count = cursor.fetchone()[0]
+    
+    conn.close()
+    
+    return {
+        'total_users': users_count if users_count is not None else 0,
+        'total_balance': total_balance if total_balance is not None else 0.0,
+        'total_referrals': total_referrals if total_referrals is not None else 0,
+        'files_count': files_count
+    }
+
+def delete_file_from_db(file_name):
+    conn = sqlite3.connect(DATABASE_NAME)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM files WHERE name = ?", (file_name,))
+    deleted_rows = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return deleted_rows > 0
 
 # ==============================================================================
 # 3. دوال الواجهة (UI & Check Functions)
 # ==============================================================================
 
 async def check_subscription(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    # التحقق من الاشتراكات في القنوات المطلوبة
     for channel_username in REQUIRED_CHANNELS:
         channel = channel_username.strip()
         if not channel: continue
         try:
-            # استخدام get_chat_member للتحقق من حالة العضوية
             member = await context.bot.get_chat_member(chat_id=channel, user_id=user_id)
             if member.status not in ["member", "administrator", "creator"]:
                 return False
         except Exception:
-            # التعامل مع أي خطأ في الاتصال أو عدم وجود القناة
             return False 
     return True
 
 async def prompt_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # إنشاء رسالة تطلب الاشتراك مع أزرار للقنوات والتحقق
     message = update.effective_message 
     buttons = []
     for channel in REQUIRED_CHANNELS:
         if channel.strip():
-            # إضافة زر لكل قناة
             buttons.append([InlineKeyboardButton(f"اشترك في {channel.strip()}", url=f"https://t.me/{channel.strip('@')}")])
 
     buttons.append([InlineKeyboardButton("✅ تم الاشتراك، تحقق الآن", callback_data='check_and_main_menu')])
@@ -172,7 +201,6 @@ async def prompt_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
 
 async def get_main_menu_markup(user_id):
-    # بناء لوحة المفاتيح الرئيسية
     user = get_user(user_id)
     balance = user['balance']
     
@@ -191,7 +219,6 @@ async def get_main_menu_markup(user_id):
     return InlineKeyboardMarkup(keyboard)
 
 async def get_main_menu_text(user_id, application):
-    # بناء نص القائمة الرئيسية
     user = get_user(user_id)
     balance = user['balance']
     bot_info = await application.bot.get_me()
@@ -205,14 +232,12 @@ async def get_main_menu_text(user_id, application):
     )
     
 async def edit_to_main_menu(message: telegram.Message, context: ContextTypes.DEFAULT_TYPE, user_id: int):
-    # تعديل الرسالة الحالية إلى القائمة الرئيسية
     markup = await get_main_menu_markup(user_id)
     text = await get_main_menu_text(user_id, context.application)
     
     try:
         await message.edit_text(text, reply_markup=markup, parse_mode='HTML')
     except telegram.error.BadRequest:
-        # إذا فشل التعديل، نرسل رسالة جديدة
         await message.reply_text(text, reply_markup=markup, parse_mode='HTML')
 
 
@@ -221,7 +246,6 @@ async def edit_to_main_menu(message: telegram.Message, context: ContextTypes.DEF
 # ==============================================================================
 
 async def register_pending_referral(user_id, context: ContextTypes.DEFAULT_TYPE):
-    # تسجيل الإحالة المعلقة بعد التحقق من الاشتراك
     user = get_user(user_id)
     
     if 'pending_referrer' in context.user_data and user.get('referrer_id') == 0:
@@ -239,7 +263,6 @@ async def register_pending_referral(user_id, context: ContextTypes.DEFAULT_TYPE)
     return False
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # معالج أمر /start
     user_id = update.effective_user.id
     
     if user_id == ADMIN_ID:
@@ -248,7 +271,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         
     user = get_user(user_id)
     
-    # معالجة رابط الإحالة
     if context.args:
         referrer_id_str = context.args[0]
         try:
@@ -258,7 +280,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         except ValueError:
             pass
 
-    # التحقق من الاشتراك
     is_subscribed = await check_subscription(user_id, context)
     
     if not is_subscribed:
@@ -273,7 +294,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(text, reply_markup=markup, parse_mode='HTML')
 
 async def show_files_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # عرض قائمة الملفات
     query = update.callback_query
     await query.answer()
 
@@ -296,7 +316,6 @@ async def show_files_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     )
 
 async def show_earn_ruble_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # عرض رابط الإحالة
     query = update.callback_query
     await query.answer()
     
@@ -323,7 +342,6 @@ async def show_earn_ruble_menu(update: Update, context: ContextTypes.DEFAULT_TYP
     await query.edit_message_text(message_text, reply_markup=reply_markup, parse_mode='HTML')
 
 async def prompt_buy_file(update: Update, context: ContextTypes.DEFAULT_TYPE, file_name_encoded: str) -> None:
-    # طلب تأكيد شراء الملف
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
@@ -363,7 +381,6 @@ async def prompt_buy_file(update: Update, context: ContextTypes.DEFAULT_TYPE, fi
     )
 
 async def confirm_buy_file(update: Update, context: ContextTypes.DEFAULT_TYPE, file_name_encoded: str) -> None:
-    # تنفيذ عملية الشراء وتسليم الملف
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
@@ -388,7 +405,7 @@ async def confirm_buy_file(update: Update, context: ContextTypes.DEFAULT_TYPE, f
         await query.edit_message_text("❌ عملية فاشلة: رصيدك أصبح غير كافٍ.", reply_markup=await get_main_menu_markup(user_id))
         return
 
-    update_user_balance(user_id, -price) # خصم الرصيد
+    update_user_balance(user_id, -price)
     
     await context.bot.send_message(
         chat_id=user_id,
@@ -403,7 +420,6 @@ async def confirm_buy_file(update: Update, context: ContextTypes.DEFAULT_TYPE, f
     )
     
 async def transfer_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # بدء محادثة التحويل
     query = update.callback_query
     await query.answer()
     
@@ -417,7 +433,6 @@ async def transfer_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     return AWAITING_TRANSFER_AMOUNT
 
 async def receive_transfer_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # استقبال مبلغ التحويل
     user_id = update.effective_user.id
     text = update.message.text
     user = get_user(user_id)
@@ -441,7 +456,6 @@ async def receive_transfer_amount(update: Update, context: ContextTypes.DEFAULT_
         return AWAITING_TRANSFER_AMOUNT
 
 async def receive_transfer_target(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # استقبال آيدي المستخدم المستهدف وتنفيذ التحويل
     sender_id = update.effective_user.id
     amount = context.user_data.get('transfer_amount')
     text = update.message.text
@@ -452,7 +466,7 @@ async def receive_transfer_target(update: Update, context: ContextTypes.DEFAULT_
             await update.message.reply_text("❌ لا يمكنك التحويل إلى نفسك. أرسل آيدي مستخدم آخر.")
             return AWAITING_TRANSFER_TARGET
         
-        get_user(receiver_id) # لضمان إنشاء المستخدم في قاعدة البيانات إذا لم يكن موجوداً
+        get_user(receiver_id) 
 
         update_user_balance(sender_id, -amount)
         update_user_balance(receiver_id, amount)
@@ -471,25 +485,24 @@ async def receive_transfer_target(update: Update, context: ContextTypes.DEFAULT_
         return AWAITING_TRANSFER_TARGET
 
 async def cancel_transfer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # إلغاء محادثة التحويل
     query = update.callback_query
     context.user_data.clear()
     await query.edit_message_text("✅ تم إلغاء عملية التحويل.", reply_markup=await get_main_menu_markup(query.from_user.id))
     return ConversationHandler.END
 
 # ==============================================================================
-# 5. معالجات المشرف (Admin Handlers) - تم تفعيل إدارة الرصيد بالكامل
+# 5. معالجات المشرف (Admin Handlers)
 # ==============================================================================
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """عرض لوحة تحكم المشرف."""
+    """عرض لوحة تحكم المشرف بجميع الخيارات المفعلة وغير المفعلة."""
     
     keyboard = [
         [InlineKeyboardButton("➕ إضافة ملف PHP جديد", callback_data='admin_add_file')],
-        [InlineKeyboardButton("📝 إدارة/تعديل الملفات (غير مفعل)", callback_data='admin_list_files')],
+        [InlineKeyboardButton("📝 إدارة/حذف الملفات", callback_data='admin_list_files')], # تم تفعيل الزر
         [InlineKeyboardButton("💰 تعديل رصيد مستخدم", callback_data='admin_edit_balance_start')],
-        [InlineKeyboardButton("📊 إحصائيات البوت (غير مفعل)", callback_data='admin_stats')],
-        [InlineKeyboardButton("📣 إرسال رسالة جماعية (غير مفعل)", callback_data='admin_broadcast')],
+        [InlineKeyboardButton("📊 إحصائيات البوت", callback_data='admin_stats')], # تم تفعيل الزر
+        [InlineKeyboardButton("📣 إرسال رسالة جماعية", callback_data='admin_broadcast')], # تم تفعيل الزر
         [InlineKeyboardButton("❌ إغلاق لوحة المشرف", callback_data='admin_close_panel')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -665,9 +678,116 @@ async def admin_change_balance(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text("❌ القيمة المدخلة غير صحيحة. يجب أن تكون بصيغة `+رقم` أو `-رقم`.")
         return AWAITING_BALANCE_CHANGE
 
+# --- دوال الإحصائيات (Stats) ---
+
+async def admin_show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    
+    stats = get_bot_stats()
+    
+    message_text = (
+        "📊 **إحصائيات البوت الحالية** 📊\n\n"
+        f"👥 إجمالي المستخدمين: **{stats['total_users']}**\n"
+        f"💰 الرصيد الكلي للمستخدمين: **{stats['total_balance']:.2f} روبل**\n"
+        f"🎁 إجمالي الإحالات: **{stats['total_referrals']}**\n"
+        f"🗃️ عدد الملفات المتاحة: **{stats['files_count']}**"
+    )
+    
+    keyboard = [[InlineKeyboardButton("↩️ العودة للوحة المشرف", callback_data='show_admin_panel')]]
+    
+    await query.edit_message_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='HTML')
+
+# --- دوال الإرسال الجماعي (Broadcast) ---
+
+async def admin_prompt_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+
+    await query.edit_message_text(
+        "📣 **الإرسال الجماعي**\n\nأرسل **الرسالة** التي تود إرسالها لجميع مستخدمي البوت (يمكنك استخدام HTML):",
+        parse_mode='HTML',
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ إلغاء العملية", callback_data='cancel_admin')]])
+    )
+    return AWAITING_BROADCAST_MESSAGE
+
+async def admin_send_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    message_text = update.message.text
+    all_user_ids = get_all_user_ids()
+    sent_count = 0
+    failed_count = 0
+    
+    await update.message.reply_text("بدء عملية الإرسال الجماعي. قد تستغرق العملية بعض الوقت...")
+
+    for user_id in all_user_ids:
+        try:
+            # استخدام try-except لاحتواء المستخدمين الذين قاموا بحظر البوت
+            await context.bot.send_message(chat_id=user_id, text=message_text, parse_mode='HTML')
+            sent_count += 1
+        except Exception:
+            failed_count += 1
+        
+    await update.message.reply_text(
+        f"✅ **اكتمل الإرسال الجماعي!**\n"
+        f"تم الإرسال بنجاح إلى: {sent_count} مستخدم\n"
+        f"فشل الإرسال إلى: {failed_count} مستخدم (ربما قاموا بحظر البوت)"
+    )
+    
+    context.user_data.clear()
+    await admin_panel(update, context) 
+    return ConversationHandler.END
+
+# --- دوال إدارة الملفات (Manage Files) ---
+
+async def admin_list_files_for_management(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+
+    available_files = get_all_files()
+
+    if not available_files:
+        await query.edit_message_text(
+            "🗃️ لا توجد ملفات حالياً لإدارتها.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩️ العودة للوحة المشرف", callback_data='show_admin_panel')]])
+        )
+        return
+
+    file_keyboard = []
+    for file_name, price, _ in available_files:
+        short_name_display = file_name.splitlines()[0]
+        button_text = f"🗑️ حذف: {short_name_display} ({price:.2f} روبل)"
+        file_keyboard.append([InlineKeyboardButton(button_text, callback_data=f'admin_delete_file_{file_name.replace(" ", "_")}')]) 
+
+    file_keyboard.append([InlineKeyboardButton("↩️ العودة للوحة المشرف", callback_data='show_admin_panel')])
+
+    reply_markup = InlineKeyboardMarkup(file_keyboard)
+
+    await query.edit_message_text(
+        text="📝 **إدارة/تعديل الملفات**\n\nاضغط على الزر لحذف الملف نهائياً:",
+        reply_markup=reply_markup,
+        parse_mode='HTML'
+    )
+
+async def admin_confirm_delete_file(update: Update, context: ContextTypes.DEFAULT_TYPE, file_name_encoded: str) -> None:
+    query = update.callback_query
+    await query.answer()
+    
+    file_name = file_name_encoded.replace('_', ' ')
+    
+    if delete_file_from_db(file_name):
+        await query.edit_message_text(
+            f"✅ **تم حذف الملف بنجاح!**\n{file_name.splitlines()[0]}",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩️ العودة للوحة المشرف", callback_data='show_admin_panel')]])
+        )
+    else:
+        await query.edit_message_text(
+            f"❌ فشل حذف الملف: {file_name.splitlines()[0]}",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩️ العودة للوحة المشرف", callback_data='show_admin_panel')]])
+        )
+
+# --- دوال الإلغاء والإغلاق العامة ---
 
 async def cancel_admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """إلغاء عملية المشرف وضمان العودة للوحة التحكم."""
     context.user_data.clear()
     
     if update.callback_query:
@@ -676,13 +796,11 @@ async def cancel_admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE
     else:
         message = update.message
         
-    # محاولة تعديل الرسالة للعودة للوحة المشرف
     await admin_panel(message, context)
     
     return ConversationHandler.END
 
 async def admin_close_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """إغلاق لوحة المشرف وحذف الرسالة."""
     query = update.callback_query
     await query.answer("تم إغلاق اللوحة.")
     try:
@@ -695,7 +813,6 @@ async def admin_close_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==============================================================================
 
 async def main_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # المعالج العام للأزرار
     query = update.callback_query
     data = query.data
     user_id = query.from_user.id
@@ -725,7 +842,6 @@ async def main_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
         await query.answer(f"معلوماتك:\nالآيدي: {user_id}\nالرصيد: {user['balance']:.2f} روبل\nالإحالات: {user['referral_count']}\nالمُحيل: {referrer_info}", show_alert=True)
         
     elif data == 'buy_points':
-        # زر شحن الرصيد
         await query.edit_message_text(
             "**لشحن رصيدك، يرجى التواصل مع الدعم الفني:**\n"
             f"@{SUPPORT_USERNAME}",
@@ -733,12 +849,10 @@ async def main_callback_handler(update: Update, context: ContextTypes.DEFAULT_TY
             parse_mode='HTML'
         )
         
-    elif data in ['buy_hosting', 'free_ruble', 'proof_channel', 'admin_list_files', 'admin_stats', 'admin_broadcast']:
-        # الأزرار غير المنفذة
+    elif data in ['buy_hosting', 'free_ruble', 'proof_channel']:
         await query.answer("لم يتم تنفيذ هذه الوظيفة بعد. نعتذر للإزعاج.", show_alert=True)
         
 async def buy_file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # معالج خاص لأزرار شراء الملفات
     query = update.callback_query
     data = query.data
     
@@ -749,6 +863,13 @@ async def buy_file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     elif data.startswith('confirm_buy_'):
         file_name_encoded = data.replace('confirm_buy_', '')
         await confirm_buy_file(update, context, file_name_encoded)
+        
+async def admin_delete_file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    data = query.data
+    if data.startswith('admin_delete_file_'):
+        file_name_encoded = data.replace('admin_delete_file_', '')
+        await admin_confirm_delete_file(update, context, file_name_encoded)
 
 # ==============================================================================
 # 7. الإعداد والتشغيل (Long Polling)
@@ -757,6 +878,8 @@ async def buy_file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 if __name__ == '__main__':
     init_db()
     application = Application.builder().token(TOKEN).build()
+
+    # Conversation Handlers 
 
     # 1. إضافة ملف (Add File)
     admin_add_file_conv = ConversationHandler(
@@ -799,6 +922,17 @@ if __name__ == '__main__':
         allow_reentry=True
     )
     application.add_handler(admin_edit_balance_conv)
+    
+    # 4. الإرسال الجماعي (Broadcast)
+    admin_broadcast_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(admin_prompt_broadcast, pattern='^admin_broadcast$')],
+        states={
+            AWAITING_BROADCAST_MESSAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND & filters.User(ADMIN_ID), admin_send_broadcast)],
+        },
+        fallbacks=[CommandHandler('cancel', cancel_admin_action), CallbackQueryHandler(cancel_admin_action, pattern='^cancel_admin$')],
+        allow_reentry=True
+    )
+    application.add_handler(admin_broadcast_conv)
 
 
     # Command Handlers
@@ -810,7 +944,10 @@ if __name__ == '__main__':
     # معالج خاص لأزرار شراء الملفات وتأكيد الشراء
     application.add_handler(CallbackQueryHandler(buy_file_handler, pattern='^(buy_file_|confirm_buy_).*$'))
 
-    # معالج لأزرار المشرف غير التفاعلية (تم حذف add_filters)
+    # المعالج الخاص بمسح الملفات
+    application.add_handler(CallbackQueryHandler(admin_delete_file_handler, pattern='^admin_delete_file_.*$', filters=filters.User(ADMIN_ID)))
+    
+    # معالج لأزرار المشرف غير التفاعلية (تم حذف add_filters لحل مشكلة التوافق)
     if ADMIN_ID != 0:
         # معالج المشرف للعودة للوحة
         application.add_handler(
@@ -821,10 +958,15 @@ if __name__ == '__main__':
         application.add_handler(
             CallbackQueryHandler(admin_close_panel, pattern='^admin_close_panel$')
         )
-
-        # أزرار المشرف غير المنفذة
+        
+        # معالج الإحصائيات (مفعل)
         application.add_handler(
-            CallbackQueryHandler(main_callback_handler, pattern='^(admin_list_files|admin_stats|admin_broadcast)$')
+            CallbackQueryHandler(admin_show_stats, pattern='^admin_stats$')
+        )
+        
+        # معالج إدارة الملفات (مفعل)
+        application.add_handler(
+            CallbackQueryHandler(admin_list_files_for_management, pattern='^admin_list_files$')
         )
 
     # المعالج العام لبقية أزرار القائمة الرئيسية (يجب أن يكون الأخير)
