@@ -4,7 +4,8 @@ import sqlite3
 import telegram
 import logging
 import asyncio 
-import threading # 🔑 الحل الجذري لمشكلة Event Loop
+# تم إزالة import threading
+
 from flask import Flask, request, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -43,9 +44,7 @@ AWAITING_TRANSFER_AMOUNT, AWAITING_TRANSFER_TARGET = range(3, 5)
 # 2. دوال قاعدة البيانات (Database Functions)
 # ==============================================================================
 
-# ... (دوال قاعدة البيانات: init_db, get_user, update_user_balance, add_referral, get_all_files, add_file_to_db)
-# (يتم الحفاظ عليها كما هي)
-
+# ... (دوال قاعدة البيانات كما هي)
 def init_db():
     conn = sqlite3.connect(DATABASE_NAME)
     cursor = conn.cursor()
@@ -125,11 +124,11 @@ def add_file_to_db(name, price, file_link):
     finally:
         conn.close()
 
-
 # ==============================================================================
 # 3. دوال الواجهة (UI & Check Functions)
 # ==============================================================================
 
+# ... (دوال UI & Check Functions كما هي)
 async def check_subscription(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
     for channel_username in REQUIRED_CHANNELS:
         channel = channel_username.strip()
@@ -139,7 +138,6 @@ async def check_subscription(user_id: int, context: ContextTypes.DEFAULT_TYPE) -
             if member.status not in ["member", "administrator", "creator"]:
                 return False
         except Exception:
-            # تجاهل الأخطاء التي تحدث عند محاولة جلب معلومات القناة
             return False 
     return True
 
@@ -199,13 +197,13 @@ async def edit_to_main_menu(message: telegram.Message, context: ContextTypes.DEF
     try:
         await message.edit_text(text, reply_markup=markup, parse_mode='HTML')
     except telegram.error.BadRequest:
-        # إذا لم يكن هناك شيء للتعديل أو كانت الرسالة قديمة
         await message.reply_text(text, reply_markup=markup, parse_mode='HTML')
 
 # ==============================================================================
 # 4. معالجات المستخدم (User Handlers)
 # ==============================================================================
 
+# ... (دوال المستخدم كما هي)
 async def register_pending_referral(user_id, context: ContextTypes.DEFAULT_TYPE):
     user = get_user(user_id)
     
@@ -255,10 +253,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = await get_main_menu_text(user_id)
     
     await update.message.reply_text(text, reply_markup=markup, parse_mode='HTML')
-
-
-# ... (بقية دوال المستخدم: show_files_menu, show_earn_ruble_menu, prompt_buy_file, confirm_buy_file, transfer_start, receive_transfer_amount, receive_transfer_target, cancel_transfer)
-# (يتم الحفاظ عليها كما هي)
 
 async def show_files_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
@@ -598,7 +592,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await admin_close_panel(update, context)
             return
         elif data == 'admin_list_files' or data == 'admin_stats' or data == 'admin_edit_balance' or data == 'admin_broadcast':
-            # نضمن أن الأزرار الإدارية غير المنفذة لا تسبب أخطاء
             await query.answer("هذه الوظيفة الإدارية لم تُنفذ بعد.", show_alert=True)
             return
     
@@ -643,6 +636,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 init_db()
 
 app = Flask(__name__)
+# ⚠️ يجب التأكد من تهيئة حلقة الأحداث قبل البدء
+try:
+    loop = asyncio.get_running_loop()
+except RuntimeError:
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+# 💡 يتم بناء الـ Application هنا
 application = Application.builder().token(TOKEN).updater(None).build()
 
 # إضافة جميع الـ Handlers
@@ -685,13 +686,6 @@ async def set_webhook():
     await application.bot.set_webhook(url=WEBHOOK_URL, secret_token=SECRET_TOKEN)
     return jsonify({"status": "ok", "message": f"تم ضبط خطاف الويب على: {WEBHOOK_URL}"}), 200
 
-def run_async(update):
-    """دالة مساعدة لتشغيل process_update في Thread منفصل."""
-    try:
-        asyncio.run(application.process_update(update))
-    except Exception as e:
-        logger.error(f"Error in processing thread: {e}")
-
 @app.route('/telegram', methods=['POST'])
 def telegram_webhook(): 
     
@@ -703,14 +697,14 @@ def telegram_webhook():
         data = request.get_json(force=True)
         update = Update.de_json(data, application.bot)
         
-        # 🔑 الحل الجذري: إطلاق معالجة التحديث في Thread منفصل
-        thread = threading.Thread(target=run_async, args=(update,))
-        thread.start()
+        # 💥 الحل النهائي: استخدام run_coroutine_threadsafe لجدولة المهمة على حلقة الأحداث الموجودة
+        # هذا يضمن عدم إغلاق الحلقة قبل إتمام المهمة
+        asyncio.run_coroutine_threadsafe(application.process_update(update), loop).result()
 
     except Exception as e:
-        logger.error(f"Error receiving update: {e}")
+        logger.error(f"Error processing update in webhook: {e}")
 
-    # يجب أن يعود Flask بـ 200 OK فوراً لمنع تيليجرام من إعادة إرسال التحديث
+    # يجب أن يعود Flask بـ 200 OK فوراً
     return 'OK', 200
 
 
@@ -718,5 +712,10 @@ if __name__ == "__main__":
     if not TOKEN or ADMIN_ID == 0 or not WEBHOOK_URL:
         logger.error("Configuration missing: Check BOT_TOKEN, ADMIN_ID, and WEBHOOK_URL environment variables.")
     
+    # ⚠️ تهيئة حلقة الأحداث النهائية للتشغيل (نفس الحلقة التي تم استخدامها أعلاه)
+    asyncio.set_event_loop(loop)
+    
     print(f"Flask App running on port {PORT}. Webhook URL: {WEBHOOK_URL}")
+    # تشغيل Flask بشكل طبيعي (سيتم التعامل مع Asyncio بواسطة run_coroutine_threadsafe)
+    loop.run_until_complete(application.initialize())
     app.run(host='0.0.0.0', port=PORT)
